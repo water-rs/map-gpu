@@ -1,81 +1,91 @@
 [package]
 name = "waterui-map-gpu"
 version = "0.1.0"
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-build = "build.rs"
-readme = "../../../README.md"
-repository.workspace = true
+edition = "2024"
+rust-version = "1.95"
+authors = ["Lexo Liu <me@lexo.cool>"]
+license = "Apache-2.0 OR MIT"
+readme = "README.md"
+repository = "https://github.com/water-rs/map-gpu"
 description = "GPU-drawn MapLibre vector map realization for WaterUI"
 keywords = ["map", "vector-tiles", "vello", "wgpu", "waterui"]
 categories = ["gui", "graphics"]
+build = "build.rs"
+
+[lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+multiple_crate_versions = "allow"
 
 [dependencies]
-blocking.workspace = true
+blocking = "1.7.0"
 bytemuck = "1.25"
-executor-core.workspace = true
-futures.workspace = true
-futures-lite.workspace = true
-geo.workspace = true
-geo-types.workspace = true
-# Raster and raster-dem tiles ship as PNG/JPEG/WebP; no other codec is reachable
-# from a MapLibre tile source, so the decoder stays feature-scoped to those.
+executor-core = "0.7.1"
+futures = "0.3"
+futures-lite = "2.6"
+geo = { version = "0.32", default-features = false }
+geo-types = "0.7"
 image = { version = "0.25.10", default-features = false, features = [
     "jpeg",
     "png",
     "webp",
 ] }
-kurbo.workspace = true
-lru.workspace = true
-maplibre-expr.workspace = true
-mvt-reader.workspace = true
-nami.workspace = true
-native-executor.workspace = true
-parley = { workspace = true, features = ["system"] }
-peniko.workspace = true
+kurbo = "0.13"
+lru = "0.16"
+maplibre-expr = "0.3.2"
+mvt-reader = "2.4.0"
+nami = "0.11.0"
+native-executor = "0.8.0"
+parley = { version = "0.11", default-features = false, features = ["system"] }
+peniko = "0.6"
 rayon = "1.12"
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-shaderloom.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
-url.workspace = true
-vello.workspace = true
-waterui-core.workspace = true
-waterui-graphics = { workspace = true, features = ["gpu"] }
-waterui-map.workspace = true
-waterui-url = { workspace = true, features = ["std"] }
-wgpu.workspace = true
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = "1.0"
+shaderloom = "0.1.0"
+thiserror = "2.0.19"
+tracing = "0.1.44"
+url = "2.5"
+vello = "0.9"
+waterui-core = { version = "0.3.0", git = "https://github.com/water-rs/waterui.git", branch = "dev" }
+waterui-graphics = { version = "0.3.0", git = "https://github.com/water-rs/waterui.git", branch = "dev", features = ["gpu"] }
+waterui-map = { version = "0.1.0", git = "https://github.com/water-rs/waterui.git", branch = "dev" }
+waterui-url = { version = "0.3.0", git = "https://github.com/water-rs/waterui.git", branch = "dev", features = ["std"] }
+wgpu = "29.0.4"
 
 [build-dependencies]
-shaderloom = { workspace = true, features = ["build"] }
+shaderloom = { version = "0.1.0", features = ["build"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-zenwave = { workspace = true, features = ["native-tls"] }
+zenwave = { version = "0.5.0", default-features = false, features = ["native-tls"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-zenwave = { workspace = true, features = ["rustls"] }
+zenwave = { version = "0.5.0", default-features = false, features = ["rustls"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(any(target_vendor = "apple", target_os = "android"))))'.dependencies]
-zenwave = { workspace = true, features = ["rustls"] }
+zenwave = { version = "0.5.0", default-features = false, features = ["rustls"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { workspace = true, features = ["js"] }
-zenwave.workspace = true
+getrandom = { version = "0.2", features = ["js"] }
+zenwave = { version = "0.5.0", default-features = false }
 
 [dev-dependencies]
 num-traits = { version = "0.2", default-features = false }
-pollster.workspace = true
+pollster = "1.0"
 
-[lints]
-workspace = true
-
-# This realization fetches its style and vector tiles over HTTPS, so an app
-# that shows a GPU map has to grant network access.
 [package.metadata.waterui.permissions]
 internet = { reason = "downloads map styles and vector tiles" }
 
-# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
 ignored = ["getrandom", "shaderloom"]
