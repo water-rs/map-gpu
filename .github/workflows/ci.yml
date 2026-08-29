@@ -31,13 +31,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl-dev libgbm-dev libwayland-dev             libxkbcommon-dev libvulkan-dev
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev             libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev             libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev             libxkbcommon-dev mesa-vulkan-drivers libvulkan1
       # `shaderloom` compiles WGSL to DXIL on Windows through `dxc`
       - name: Install DirectX Shader Compiler
         if: runner.os == 'Windows'
         uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets --all-features
+      - run: cargo test --workspace --all-targets --all-features
 
   lint:
     name: Lint
@@ -50,10 +50,10 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl-dev libgbm-dev libwayland-dev             libxkbcommon-dev libvulkan-dev
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev             libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev             libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev             libxkbcommon-dev mesa-vulkan-drivers libvulkan1
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   msrv:
     name: MSRV
@@ -64,6 +64,6 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl-dev libgbm-dev libwayland-dev             libxkbcommon-dev libvulkan-dev
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev             libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev             libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev             libxkbcommon-dev mesa-vulkan-drivers libvulkan1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-features
+      - run: cargo check --workspace --all-features
