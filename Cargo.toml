@@ -58,10 +58,10 @@ thiserror = "2.0.19"
 tracing = "0.1.44"
 url = "2.5"
 vello = "0.9"
-waterui-core = { version = "0.3.0", git = "https://github.com/water-rs/waterui.git", branch = "dev" }
-waterui-graphics = { version = "0.3.0", git = "https://github.com/water-rs/waterui.git", branch = "dev", features = ["gpu"] }
-waterui-map = { version = "0.1.0", git = "https://github.com/water-rs/waterui.git", branch = "dev" }
-waterui-url = { version = "0.3.0", git = "https://github.com/water-rs/waterui.git", branch = "dev", features = ["std"] }
+waterui-core = { version = "0.3.0" }
+waterui-graphics = { version = "0.3.0", features = ["gpu"] }
+waterui-map = { version = "0.1.0" }
+waterui-url = { version = "0.3.0", features = ["std"] }
 wgpu = "29.0.4"
 
 [build-dependencies]
