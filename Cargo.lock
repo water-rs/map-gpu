@@ -755,7 +755,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -895,7 +895,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2767,7 +2767,6 @@ dependencies = [
  "num-traits",
  "once_cell",
  "rustc-hash",
- "spirv",
  "thiserror 2.0.20",
  "unicode-ident",
 ]
@@ -3641,7 +3640,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3853,11 +3852,11 @@ dependencies = [
 
 [[package]]
 name = "shaderloom"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f86322d7fb2cf630579baf1a3335c46188ad305fe09f276393396ebb74cf060"
+checksum = "abfe38a4a8d473f595240dd001b51c5778b30ee439a0c5f4960554a977bcba93"
 dependencies = [
- "naga 30.0.1",
+ "naga 29.0.4",
  "wgpu",
 ]
 
@@ -3959,7 +3958,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4106,7 +4105,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4115,7 +4114,7 @@ version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8c27177b12a6399ffc08b98f76f7c9a1f4fe9fc967c784c5a071fa8d93cf7e1"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4345,7 +4344,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4615,7 +4614,8 @@ dependencies = [
 [[package]]
 name = "waterkit-build"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25017e351ff431968b04efc3dcf4be0e22755434933bed3f0100151628119148"
 dependencies = [
  "jni 0.22.4",
  "ndk-context",
@@ -4626,7 +4626,8 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4d436d7021e918717202823eae4219d2d5fd0d20c2123f9f2b9e757aa7ae5c3"
 dependencies = [
  "executor-core",
  "jiff",
@@ -4638,7 +4639,8 @@ dependencies = [
 [[package]]
 name = "waterkit-location"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d9a5ba00414d29c4855e4a427cd3c2169bbc7ae383a970f09a27498b6c9253b"
 dependencies = [
  "async-channel",
  "async-io",
@@ -4660,7 +4662,8 @@ dependencies = [
 [[package]]
 name = "waterkit-permission"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6075692eeffb87d9ab0ed0a41f32955e29464bdc9c34e4ca41a56775aa9027f"
 dependencies = [
  "async-channel",
  "futures",
@@ -4680,7 +4683,8 @@ dependencies = [
 [[package]]
 name = "waterui-core"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e85d290b130eef17b46cd7ab4adea49ea6ac987ccf36e058ca09be774e95652"
 dependencies = [
  "anyhow",
  "nami",
@@ -4692,7 +4696,8 @@ dependencies = [
 [[package]]
 name = "waterui-graphics"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e5f1cfa6dfb835e9ff54915362edc1826f1fe5a455430eea93906183bd00260"
 dependencies = [
  "bytemuck",
  "encase",
@@ -4723,7 +4728,8 @@ dependencies = [
 [[package]]
 name = "waterui-macros"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "604edd8f934bc692dd6005ef906dbd5d1580fd7e80e0ac1e4a35776d18089bbb"
 dependencies = [
  "icu_locale_core",
  "icu_locid",
@@ -4738,7 +4744,8 @@ dependencies = [
 [[package]]
 name = "waterui-map"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0b05af3483a5551ece33e6e4fff94007642c22adcabf2a00ee261574e294f14"
 dependencies = [
  "nami",
  "waterkit-location",
@@ -4788,7 +4795,8 @@ dependencies = [
 [[package]]
 name = "waterui-str"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c66e3d6b414cab8b20d4a741c44e0f977b27098304547cbe38b3e0bec1b16e6d"
 dependencies = [
  "nami-core",
 ]
@@ -4796,7 +4804,8 @@ dependencies = [
 [[package]]
 name = "waterui-url"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/waterui.git?branch=dev#d3f24678583ee46e732f36b7948ae55ccf85a650"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3588a579d046f8b45a351f5e746bb32acf08bc8f06810c276d59ea8fb0480fc0"
 dependencies = [
  "base64",
  "dirs",
@@ -5078,7 +5087,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
