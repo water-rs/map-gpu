@@ -346,8 +346,7 @@ dependencies = [
 [[package]]
 name = "block"
 version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
+source = "git+https://github.com/Dicklesworthstone/rust-block?rev=b39ae859d1ee8e8cb5eef6a516471f1578d26b96#b39ae859d1ee8e8cb5eef6a516471f1578d26b96"
 
 [[package]]
 name = "block-buffer"
@@ -755,7 +754,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -895,7 +894,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1080,15 +1079,6 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b38ad915f6dadd993ced50848a8291a543bd41ca62bc10740d5e64e2ab4cfd7"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
-name = "font-types"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e64eb721ca85a34323425f4041adc5d82704d3782d5f8f03793bc012419dce23"
@@ -1110,7 +1100,7 @@ dependencies = [
  "objc2-core-text",
  "objc2-foundation",
  "parlance",
- "read-fonts 0.41.0",
+ "read-fonts",
  "roxmltree",
  "smallvec",
  "windows",
@@ -1353,15 +1343,14 @@ dependencies = [
 [[package]]
 name = "glifo"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "282a26c1e23de04bdab3e34a21b6f877a479b96737792516b9b8b8f69b6661be"
+source = "git+https://github.com/lexoliu/vello?rev=d68d9e9825bcd1ffee762323881c13a2e7a3f639#d68d9e9825bcd1ffee762323881c13a2e7a3f639"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
  "hashbrown 0.17.1",
  "log",
  "peniko",
- "skrifa 0.44.0",
+ "skrifa",
  "smallvec",
  "vello_common",
 ]
@@ -1475,7 +1464,7 @@ checksum = "c03d949a14aa089bbb282f7dd76a498a7f684428e4257202efc119ec010376f9"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
- "read-fonts 0.41.0",
+ "read-fonts",
  "smallvec",
 ]
 
@@ -3177,7 +3166,7 @@ dependencies = [
  "linebender_resource_handle",
  "parlance",
  "parley_data",
- "skrifa 0.44.0",
+ "skrifa",
 ]
 
 [[package]]
@@ -3501,22 +3490,12 @@ dependencies = [
 
 [[package]]
 name = "read-fonts"
-version = "0.39.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4ed38b89c2c77ff968c524145ad65fb010f38af5c7a224b53b81d47ac2daa81"
-dependencies = [
- "bytemuck",
- "font-types 0.11.3",
-]
-
-[[package]]
-name = "read-fonts"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709"
 dependencies = [
  "bytemuck",
- "font-types 0.12.4",
+ "font-types",
  "once_cell",
 ]
 
@@ -3640,7 +3619,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3912,22 +3891,12 @@ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
 name = "skrifa"
-version = "0.42.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c34617370ae968efb7161bb2beb517d9084659aae19e24b89e3db25b46e4564"
-dependencies = [
- "bytemuck",
- "read-fonts 0.39.2",
-]
-
-[[package]]
-name = "skrifa"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68"
 dependencies = [
  "bytemuck",
- "read-fonts 0.41.0",
+ "read-fonts",
 ]
 
 [[package]]
@@ -3958,7 +3927,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4105,7 +4074,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4114,7 +4083,7 @@ version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8c27177b12a6399ffc08b98f76f7c9a1f4fe9fc967c784c5a071fa8d93cf7e1"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4344,7 +4313,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4427,15 +4396,14 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "261359dbef879f8110ef7e1c442246c838d33d3d91cb05e0ea9288d432760c9f"
+source = "git+https://github.com/lexoliu/vello?rev=5e5f538556be16527f67379b105af82f408b747d#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
  "log",
  "peniko",
  "png",
- "skrifa 0.42.1",
+ "skrifa",
  "static_assertions",
  "thiserror 2.0.20",
  "vello_encoding",
@@ -4446,8 +4414,7 @@ dependencies = [
 [[package]]
 name = "vello_common"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbb2141a2bca6e6d598e471fd4d1d7eed8e020aad6a28187edda07f091a325dd"
+source = "git+https://github.com/lexoliu/vello?rev=d68d9e9825bcd1ffee762323881c13a2e7a3f639#d68d9e9825bcd1ffee762323881c13a2e7a3f639"
 dependencies = [
  "bytemuck",
  "fearless_simd",
@@ -4461,21 +4428,19 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2346f5f0d7dccb3582fcd397b4a57b43165209f1424e0d76e85dd814db164af7"
+source = "git+https://github.com/lexoliu/vello?rev=5e5f538556be16527f67379b105af82f408b747d#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
  "guillotiere",
  "peniko",
- "skrifa 0.42.1",
+ "skrifa",
  "smallvec",
 ]
 
 [[package]]
 name = "vello_hybrid"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dccbb4221070e7ef92486abef0002a651702f00a52d6be532249a0fa0eb3e9ba"
+source = "git+https://github.com/lexoliu/vello?rev=d68d9e9825bcd1ffee762323881c13a2e7a3f639#d68d9e9825bcd1ffee762323881c13a2e7a3f639"
 dependencies = [
  "bytemuck",
  "glifo",
@@ -4490,8 +4455,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd38937516fa4b47423d9255bb5e4a65e839ec9d57c38c4af6189ce56bf46b7"
+source = "git+https://github.com/lexoliu/vello?rev=5e5f538556be16527f67379b105af82f408b747d#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
  "log",
@@ -4503,8 +4467,7 @@ dependencies = [
 [[package]]
 name = "vello_sparse_shaders"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86e5fd6b8d73d641ffe8522f05e2d5a7f23620005dfc1a7f49488790b9970267"
+source = "git+https://github.com/lexoliu/vello?rev=d68d9e9825bcd1ffee762323881c13a2e7a3f639#d68d9e9825bcd1ffee762323881c13a2e7a3f639"
 dependencies = [
  "wesl",
  "wesl-macros",
@@ -4614,8 +4577,7 @@ dependencies = [
 [[package]]
 name = "waterkit-build"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25017e351ff431968b04efc3dcf4be0e22755434933bed3f0100151628119148"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
  "jni 0.22.4",
  "ndk-context",
@@ -4626,8 +4588,7 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4d436d7021e918717202823eae4219d2d5fd0d20c2123f9f2b9e757aa7ae5c3"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
  "executor-core",
  "jiff",
@@ -4639,8 +4600,7 @@ dependencies = [
 [[package]]
 name = "waterkit-location"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d9a5ba00414d29c4855e4a427cd3c2169bbc7ae383a970f09a27498b6c9253b"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
  "async-channel",
  "async-io",
@@ -4662,8 +4622,7 @@ dependencies = [
 [[package]]
 name = "waterkit-permission"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6075692eeffb87d9ab0ed0a41f32955e29464bdc9c34e4ca41a56775aa9027f"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
  "async-channel",
  "futures",
@@ -4682,9 +4641,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-core"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e85d290b130eef17b46cd7ab4adea49ea6ac987ccf36e058ca09be774e95652"
+version = "0.3.1"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
  "anyhow",
  "nami",
@@ -4695,10 +4653,10 @@ dependencies = [
 
 [[package]]
 name = "waterui-graphics"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e5f1cfa6dfb835e9ff54915362edc1826f1fe5a455430eea93906183bd00260"
+version = "0.4.0"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
+ "ash",
  "bytemuck",
  "encase",
  "filtrate",
@@ -4720,16 +4678,17 @@ dependencies = [
  "shaderloom",
  "tracing",
  "vello",
+ "vello_common",
  "vello_hybrid",
  "waterui-core",
  "wgpu",
+ "wgpu-hal",
 ]
 
 [[package]]
 name = "waterui-macros"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "604edd8f934bc692dd6005ef906dbd5d1580fd7e80e0ac1e4a35776d18089bbb"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
  "icu_locale_core",
  "icu_locid",
@@ -4743,9 +4702,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-map"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0b05af3483a5551ece33e6e4fff94007642c22adcabf2a00ee261574e294f14"
+version = "0.1.1"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
  "nami",
  "waterkit-location",
@@ -4795,8 +4753,7 @@ dependencies = [
 [[package]]
 name = "waterui-str"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c66e3d6b414cab8b20d4a741c44e0f977b27098304547cbe38b3e0bec1b16e6d"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
  "nami-core",
 ]
@@ -4804,8 +4761,7 @@ dependencies = [
 [[package]]
 name = "waterui-url"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3588a579d046f8b45a351f5e746bb32acf08bc8f06810c276d59ea8fb0480fc0"
+source = "git+https://github.com/water-rs/waterui.git?rev=c6df302408b42f18be1ea7692d0438973f1e0e62#c6df302408b42f18be1ea7692d0438973f1e0e62"
 dependencies = [
  "base64",
  "dirs",
@@ -5087,7 +5043,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
