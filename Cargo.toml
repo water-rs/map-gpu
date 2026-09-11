@@ -59,7 +59,7 @@ tracing = "0.1.44"
 url = "2.5"
 vello = "0.9"
 waterui-core = { version = "0.3.0" }
-waterui-graphics = { version = "0.3.0", features = ["gpu"] }
+waterui-graphics = { version = "0.4.0", features = ["gpu"] }
 waterui-map = { version = "0.1.0" }
 waterui-url = { version = "0.3.0", features = ["std"] }
 wgpu = "29.0.4"
