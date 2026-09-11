@@ -58,10 +58,10 @@ thiserror = "2.0.19"
 tracing = "0.1.44"
 url = "2.5"
 vello = "0.9"
-waterui-core = { version = "0.3.0", git = "https://github.com/water-rs/waterui.git", branch = "dev" }
-waterui-graphics = { version = "0.3.0", git = "https://github.com/water-rs/waterui.git", branch = "dev", features = ["gpu"] }
-waterui-map = { version = "0.1.0", git = "https://github.com/water-rs/waterui.git", branch = "dev" }
-waterui-url = { version = "0.3.0", git = "https://github.com/water-rs/waterui.git", branch = "dev", features = ["std"] }
+waterui-core = { version = "0.3.0" }
+waterui-graphics = { version = "0.4.0", features = ["gpu"] }
+waterui-map = { version = "0.1.0" }
+waterui-url = { version = "0.3.0", features = ["std"] }
 wgpu = "29.0.4"
 
 [build-dependencies]
@@ -89,3 +89,23 @@ internet = { reason = "downloads map styles and vector tiles" }
 
 [package.metadata.cargo-machete]
 ignored = ["getrandom", "shaderloom"]
+
+[patch.crates-io]
+# Tests and examples link the framework; every workspace crate comes from the
+# same monorepo commit so the graph carries exactly one copy of each.
+waterui-map-gpu = { path = "." }
+waterui-core = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
+waterui-macros = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
+waterui-map = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
+waterui-str = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
+waterui-url = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
+# Sibling extracted crates until they release against the 0.4 foundation (waterui#533).
+# Third-party forks the monorepo itself patches; git dependencies do not carry
+# their own patch table, so they are repeated here.
+block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
+vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
+vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+vello_common = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+glifo = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
