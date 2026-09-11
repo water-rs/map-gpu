@@ -1,0 +1,12 @@
+name: Install Linux dependencies
+description: >-
+  The system libraries every Linux job needs to build the workspace with all
+  features. One list, used by CI and by the release preflight, so a new native
+  dependency is added in exactly one place.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev libxkbcommon-dev mesa-vulkan-drivers libvulkan1
