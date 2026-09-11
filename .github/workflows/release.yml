@@ -21,9 +21,26 @@ jobs:
           ref: main
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: MarcoIeni/release-plz-action@v0.5
+      - uses: ./.github/actions/linux-deps
+      # The water-rs fork of release-plz (from release-plz-v0.3.161, the version
+      # release-plz-action@v0.5 pins) treats a package it cannot compare with the
+      # registry as changed instead of aborting: stock release-plz walks back to
+      # the commit that last touched the crate and runs `cargo package` there, and
+      # this crate's first commits still pointed at the monorepo workspace.
+      - uses: taiki-e/cache-cargo-install-action@v3
         with:
-          command: release
+          tool: release-plz
+          git: https://github.com/water-rs/release-plz
+          rev: cc554a52e97e0ee359e45c7801d770895247cf27
+          locked: true
+      - uses: release-plz/git-config@v0.1.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: >-
+          release-plz release
+          --git-token "${GITHUB_TOKEN}"
+          --repo-url "https://github.com/${GITHUB_REPOSITORY}"
+          --forge github
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -41,9 +58,26 @@ jobs:
           ref: main
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: MarcoIeni/release-plz-action@v0.5
+      - uses: ./.github/actions/linux-deps
+      # The water-rs fork of release-plz (from release-plz-v0.3.161, the version
+      # release-plz-action@v0.5 pins) treats a package it cannot compare with the
+      # registry as changed instead of aborting: stock release-plz walks back to
+      # the commit that last touched the crate and runs `cargo package` there, and
+      # this crate's first commits still pointed at the monorepo workspace.
+      - uses: taiki-e/cache-cargo-install-action@v3
         with:
-          command: release-pr
+          tool: release-plz
+          git: https://github.com/water-rs/release-plz
+          rev: cc554a52e97e0ee359e45c7801d770895247cf27
+          locked: true
+      - uses: release-plz/git-config@v0.1.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: >-
+          release-plz release-pr
+          --git-token "${GITHUB_TOKEN}"
+          --repo-url "https://github.com/${GITHUB_REPOSITORY}"
+          --forge github
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
