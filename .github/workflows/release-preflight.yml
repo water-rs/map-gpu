@@ -18,9 +18,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libegl-dev libgbm-dev libwayland-dev libxkbcommon-dev libvulkan-dev
+        uses: ./.github/actions/linux-deps
       - id: baseline
         run: |
           set -euo pipefail
