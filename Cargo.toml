@@ -46,26 +46,26 @@ kurbo = "0.13"
 lru = "0.16"
 maplibre-expr = "0.3.2"
 mvt-reader = "2.4.0"
-nami = "0.11.0"
+nami = "0.11.2"
 native-executor = "0.8.0"
 parley = { version = "0.11", default-features = false, features = ["system"] }
 peniko = "0.6"
 rayon = "1.12"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = "1.0"
-shaderloom = "0.1.0"
+shaderloom = "0.1.2"
 thiserror = "2.0.19"
 tracing = "0.1.44"
 url = "2.5"
 vello = "0.9"
-waterui-core = { version = "0.3.0" }
-waterui-graphics = { version = "0.4.0", features = ["gpu"] }
-waterui-map = { version = "0.1.0" }
-waterui-url = { version = "0.3.0", features = ["std"] }
+waterui-core = { version = "0.3.2" }
+waterui-graphics = { version = "0.4.1", features = ["gpu"] }
+waterui-map = { version = "0.1.2" }
+waterui-url = { version = "0.3.1", features = ["std"] }
 wgpu = "29.0.4"
 
 [build-dependencies]
-shaderloom = { version = "0.1.0", features = ["build"] }
+shaderloom = { version = "0.1.2", features = ["build"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend", "native-tls"] }
@@ -90,20 +90,12 @@ internet = { reason = "downloads map styles and vector tiles" }
 [package.metadata.cargo-machete]
 ignored = ["getrandom", "shaderloom"]
 
+# The WaterUI packages above come from crates.io, so this repository builds
+# against the same released APIs its users get. The third-party pins below are
+# the framework's own: the published `waterui-graphics` was built with these
+# forks, and dropping them here would render this crate's tests through
+# different code than the framework runs.
 [patch.crates-io]
-# Tests and examples link the framework; every workspace crate comes from the
-# same monorepo commit so the graph carries exactly one copy of each.
-waterui-map-gpu = { path = "." }
-waterui-core = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-macros = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-map = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-str = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-url = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-# Sibling extracted crates until they release against the 0.4 foundation (waterui#533).
-# Third-party forks the monorepo itself patches; git dependencies do not carry
-# their own patch table, so they are repeated here.
-block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
 vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
 vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
 vello_common = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
