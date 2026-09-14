@@ -1264,6 +1264,7 @@ struct RasterResources {
 
 struct RasterJob {
     signature: RasterSignature,
+    epoch: u64,
     camera: Camera,
     base_tiles: Arc<Vec<PreparedRasterTile>>,
     resources: RasterResources,
@@ -1272,6 +1273,7 @@ struct RasterJob {
 
 struct RasterResult {
     signature: RasterSignature,
+    epoch: u64,
     texture: CachedMapTexture,
     renderers: Vec<vello::Renderer>,
 }
@@ -1467,6 +1469,7 @@ fn rasterize_tile(
 fn rasterize_map(job: RasterJob) -> RasterResult {
     let RasterJob {
         signature,
+        epoch,
         camera,
         base_tiles,
         resources,
@@ -1530,6 +1533,7 @@ fn rasterize_map(job: RasterJob) -> RasterResult {
     );
     RasterResult {
         signature,
+        epoch,
         texture: CachedMapTexture { camera, tiles },
         renderers: returned_renderers,
     }
@@ -1545,8 +1549,9 @@ struct MapGpuRenderer {
     pending_raster_signature: Option<RasterSignature>,
     raster_resources: Option<RasterResources>,
     raster_renderers: Option<Vec<vello::Renderer>>,
-    raster_sender: mpsc::Sender<RasterResult>,
-    raster_receiver: mpsc::Receiver<RasterResult>,
+    raster_sender: mpsc::Sender<Option<RasterResult>>,
+    raster_receiver: mpsc::Receiver<Option<RasterResult>>,
+    raster_epoch: u64,
     redraw_handle: Option<waterui_graphics::RedrawHandle>,
     #[cfg(test)]
     preload_raster: bool,
@@ -1567,6 +1572,7 @@ impl MapGpuRenderer {
             raster_renderers: Some(Vec::new()),
             raster_sender,
             raster_receiver,
+            raster_epoch: 0,
             redraw_handle: None,
             #[cfg(test)]
             preload_raster: false,
@@ -1620,6 +1626,7 @@ impl MapGpuRenderer {
             .expect("GPU Map must run at most one raster job at a time");
         RasterJob {
             signature,
+            epoch: self.raster_epoch,
             camera,
             base_tiles,
             resources,
@@ -1639,7 +1646,10 @@ impl MapGpuRenderer {
         self.pending_raster_signature = Some(pending_signature);
         #[cfg(not(target_arch = "wasm32"))]
         executor_core::spawn(async move {
-            let result = blocking::unblock(move || rasterize_map(job)).await;
+            let result = blocking::unblock(move || {
+                std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| rasterize_map(job))).ok()
+            })
+            .await;
             if sender.send(result).is_ok() {
                 redraw_handle.request_redraw();
             }
@@ -1647,7 +1657,8 @@ impl MapGpuRenderer {
         .detach();
         #[cfg(target_arch = "wasm32")]
         spawn_local(async move {
-            let result = rasterize_map(job);
+            let result =
+                std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| rasterize_map(job))).ok();
             if sender.send(result).is_ok() {
                 redraw_handle.request_redraw();
             }
@@ -1659,6 +1670,15 @@ impl MapGpuRenderer {
         let Ok(result) = self.raster_receiver.try_recv() else {
             return;
         };
+        let Some(result) = result else {
+            self.pending_raster_signature = None;
+            tracing::debug!("GPU map raster task failed; rescheduling on the next frame");
+            return;
+        };
+        if result.epoch != self.raster_epoch {
+            tracing::debug!("discarded GPU map raster produced by a lost device");
+            return;
+        }
         self.pending_raster_signature = None;
         self.raster_renderers = Some(result.renderers);
         if expected == Some(&result.signature) {
@@ -1882,6 +1902,18 @@ impl GpuView for MapGpuRenderer {
         self.map
             .set_invalidator(Some(ctx.redraw_handle.invalidator()));
         self.redraw_handle = Some(ctx.redraw_handle.clone());
+
+        // `setup` runs again after the GPU device was lost and rebuilt. Every
+        // device-bound resource from the previous run — the cached map texture,
+        // the Vello renderers, and any in-flight raster job holding the old
+        // device and queue — is dead. Drop them so the next frame re-rasterizes
+        // from the CPU-side prepared scenes on the fresh device.
+        self.raster_epoch = self.raster_epoch.wrapping_add(1);
+        self.cached_texture = None;
+        self.raster_signature = None;
+        self.pending_raster_signature = None;
+        self.raster_renderers = Some(Vec::new());
+        while self.raster_receiver.try_recv().is_ok() {}
 
         let (pipeline, resources) = create_camera_resources(ctx);
         self.camera_pipeline = Some(pipeline);
