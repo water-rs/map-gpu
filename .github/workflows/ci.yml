@@ -35,7 +35,8 @@ jobs:
         if: runner.os == 'Windows'
         uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-targets --all-features
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --all-targets --all-features
 
   lint:
     name: Lint
