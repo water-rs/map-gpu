@@ -1466,7 +1466,11 @@ fn rasterize_tile(
     )
 }
 
-fn rasterize_map(job: RasterJob) -> RasterResult {
+/// Rasterizes every prepared tile for `job`'s signature into GPU textures.
+///
+/// `parallel` fans the per-tile work out over rayon; it must be `false` on
+/// devices whose wgpu calls only work on the calling thread (GL backends).
+fn rasterize_map(job: RasterJob, parallel: bool) -> RasterResult {
     let RasterJob {
         signature,
         epoch,
@@ -1484,23 +1488,37 @@ fn rasterize_map(job: RasterJob) -> RasterResult {
     let started_at = Instant::now();
     let missing_renderers = base_tiles.len().saturating_sub(renderers.len());
     #[cfg(not(target_arch = "wasm32"))]
-    renderers.extend(
-        (0..missing_renderers)
-            .into_par_iter()
-            .map(|_| build_raster_renderer(&resources.device))
-            .collect::<Vec<_>>(),
-    );
+    if parallel {
+        renderers.extend(
+            (0..missing_renderers)
+                .into_par_iter()
+                .map(|_| build_raster_renderer(&resources.device))
+                .collect::<Vec<_>>(),
+        );
+    } else {
+        renderers.extend((0..missing_renderers).map(|_| build_raster_renderer(&resources.device)));
+    }
     #[cfg(target_arch = "wasm32")]
     renderers.extend((0..missing_renderers).map(|_| build_raster_renderer(&resources.device)));
     let spare_renderers = renderers.split_off(base_tiles.len());
     #[cfg(not(target_arch = "wasm32"))]
-    let rendered = renderers
-        .into_par_iter()
-        .zip(base_tiles.par_iter())
-        .map(|(renderer, prepared)| {
-            rasterize_tile(renderer, prepared, &signature, camera, &resources)
-        })
-        .collect::<Vec<_>>();
+    let rendered = if parallel {
+        renderers
+            .into_par_iter()
+            .zip(base_tiles.par_iter())
+            .map(|(renderer, prepared)| {
+                rasterize_tile(renderer, prepared, &signature, camera, &resources)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        renderers
+            .into_iter()
+            .zip(base_tiles.iter())
+            .map(|(renderer, prepared)| {
+                rasterize_tile(renderer, prepared, &signature, camera, &resources)
+            })
+            .collect::<Vec<_>>()
+    };
     #[cfg(target_arch = "wasm32")]
     let rendered = renderers
         .into_iter()
@@ -1547,11 +1565,20 @@ struct MapGpuRenderer {
     cached_texture: Option<CachedMapTexture>,
     raster_signature: Option<RasterSignature>,
     pending_raster_signature: Option<RasterSignature>,
+    /// A raster job queued for the render thread. Only used when the device
+    /// binds wgpu calls to the calling thread's GPU context (`thread_bound`).
+    pending_raster_job: Option<RasterJob>,
     raster_resources: Option<RasterResources>,
     raster_renderers: Option<Vec<vello::Renderer>>,
     raster_sender: mpsc::Sender<Option<RasterResult>>,
     raster_receiver: mpsc::Receiver<Option<RasterResult>>,
     raster_epoch: u64,
+    /// Whether wgpu entry points are only valid on the thread `render` runs
+    /// on. True for GL-backed devices: wgpu's GLES integration requires the
+    /// owning GL context current on the calling thread, which worker threads
+    /// never have — rasterizing there crashes the process under an external
+    /// adapter and silently renders nothing under an owned one.
+    gpu_calls_thread_bound: bool,
     redraw_handle: Option<waterui_graphics::RedrawHandle>,
     #[cfg(test)]
     preload_raster: bool,
@@ -1568,11 +1595,13 @@ impl MapGpuRenderer {
             cached_texture: None,
             raster_signature: None,
             pending_raster_signature: None,
+            pending_raster_job: None,
             raster_resources: None,
             raster_renderers: Some(Vec::new()),
             raster_sender,
             raster_receiver,
             raster_epoch: 0,
+            gpu_calls_thread_bound: false,
             redraw_handle: None,
             #[cfg(test)]
             preload_raster: false,
@@ -1644,10 +1673,21 @@ impl MapGpuRenderer {
             .expect("GPU Map redraw handle missing after setup")
             .clone();
         self.pending_raster_signature = Some(pending_signature);
+        if self.gpu_calls_thread_bound {
+            // The device only answers wgpu calls on the render callback's
+            // thread; `render` drains this queue.
+            self.pending_raster_job = Some(job);
+            self.redraw_handle
+                .as_ref()
+                .expect("GPU Map redraw handle missing after setup")
+                .request_redraw();
+            return;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         executor_core::spawn(async move {
             let result = blocking::unblock(move || {
-                std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| rasterize_map(job))).ok()
+                std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| rasterize_map(job, true)))
+                    .ok()
             })
             .await;
             if sender.send(result).is_ok() {
@@ -1657,8 +1697,10 @@ impl MapGpuRenderer {
         .detach();
         #[cfg(target_arch = "wasm32")]
         spawn_local(async move {
-            let result =
-                std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| rasterize_map(job))).ok();
+            let result = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+                rasterize_map(job, false)
+            }))
+            .ok();
             if sender.send(result).is_ok() {
                 redraw_handle.request_redraw();
             }
@@ -1670,6 +1712,14 @@ impl MapGpuRenderer {
         let Ok(result) = self.raster_receiver.try_recv() else {
             return;
         };
+        self.install_raster_result(result, expected);
+    }
+
+    fn install_raster_result(
+        &mut self,
+        result: Option<RasterResult>,
+        expected: Option<&RasterSignature>,
+    ) {
         let Some(result) = result else {
             self.pending_raster_signature = None;
             tracing::debug!("GPU map raster task failed; rescheduling on the next frame");
@@ -1912,8 +1962,10 @@ impl GpuView for MapGpuRenderer {
         self.cached_texture = None;
         self.raster_signature = None;
         self.pending_raster_signature = None;
+        self.pending_raster_job = None;
         self.raster_renderers = Some(Vec::new());
         while self.raster_receiver.try_recv().is_ok() {}
+        self.gpu_calls_thread_bound = ctx.adapter.get_info().backend == wgpu::Backend::Gl;
 
         let (pipeline, resources) = create_camera_resources(ctx);
         self.camera_pipeline = Some(pipeline);
@@ -1942,7 +1994,8 @@ impl GpuView for MapGpuRenderer {
                 }
             };
             let job = self.take_raster_job(signature);
-            let result = blocking::unblock(move || rasterize_map(job)).await;
+            let parallel = !self.gpu_calls_thread_bound;
+            let result = blocking::unblock(move || rasterize_map(job, parallel)).await;
             self.raster_signature = Some(result.signature);
             self.cached_texture = Some(result.texture);
             self.raster_renderers = Some(result.renderers);
@@ -1973,6 +2026,15 @@ impl GpuView for MapGpuRenderer {
                 "scheduling asynchronous GPU map raster"
             );
             self.start_raster_job(signature.clone());
+        }
+        // A queued job rasterizes right here on the render thread — the only
+        // place a thread-bound device's wgpu calls are valid.
+        if let Some(job) = self.pending_raster_job.take() {
+            let result = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+                rasterize_map(job, false)
+            }))
+            .ok();
+            self.install_raster_result(result, signature.as_ref());
         }
 
         match (resolved.camera, self.cached_texture.as_ref()) {
