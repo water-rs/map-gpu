@@ -1,6 +1,6 @@
 [package]
 name = "waterui-map-gpu"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Lexo Liu <me@lexo.cool>"]
@@ -90,12 +90,26 @@ internet = { reason = "downloads map styles and vector tiles" }
 [package.metadata.cargo-machete]
 ignored = ["getrandom", "shaderloom"]
 
-# The WaterUI packages above come from crates.io, so this repository builds
-# against the same released APIs its users get. The third-party pins below are
-# the framework's own: the published `waterui-graphics` was built with these
-# forks, and dropping them here would render this crate's tests through
-# different code than the framework runs.
+# Until the waterui 0.5.0 wave is on crates.io the framework comes from its
+# release-candidate revision; every `waterui-*` crate this graph resolves is
+# pinned to the same monorepo commit so the graph carries exactly one copy of
+# each. The pinned manifests still carry their pre-release versions
+# (waterui-core 0.3.2, waterui-graphics 0.4.1, waterui-map 0.1.2,
+# waterui-url 0.3.1, waterui-macros 0.3.1), so the requirements above stay at
+# the versions that revision satisfies — cargo rejects a `[patch]` whose
+# manifest version does not match the requirement, and requirements of
+# "0.5.0" can only be written once the bump exists. Moving every requirement
+# to "0.5.0" is part of dropping this table when the release lands.
+#
+# The third-party pins below are the framework's own: the pinned
+# `waterui-graphics` was built with these forks, and git dependencies do not
+# carry their own patch table, so they are repeated here.
 [patch.crates-io]
+waterui-core = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-map = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-url = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
 vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
 vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
 vello_common = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
