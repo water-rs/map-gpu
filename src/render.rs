@@ -1291,22 +1291,24 @@ struct RasterJob {
 /// (`SwiftShader` on the Android emulator loses the device roughly every 35 s)
 /// must not have to keep the whole six-tile raster alive across a loss window
 /// before anything reaches the screen.
-enum RasterProgress {
-    /// A finished tile texture plus the Vello renderer that produced it.
-    Tile(Box<RasterTileProgress>),
-    /// The job rasterized every tile; returns its unused renderers to the pool.
-    Finished {
-        epoch: u64,
-        camera: Camera,
-        renderers: Vec<vello::Renderer>,
-    },
-    /// The job died before finishing (panic in the raster task).
-    Failed { epoch: u64 },
-}
-
-struct RasterTileProgress {
+struct RasterProgress {
+    /// Device generation the producing job ran on; anything stamped with a
+    /// stale epoch belongs to a dead device and is dropped on arrival.
     epoch: u64,
     camera: Camera,
+    kind: RasterProgressKind,
+}
+
+enum RasterProgressKind {
+    /// A finished tile texture plus the Vello renderer that produced it.
+    Tile(Box<RasterTilePayload>),
+    /// The job rasterized every tile; returns its unused renderers to the pool.
+    Finished { renderers: Vec<vello::Renderer> },
+    /// The job died before finishing (panic in the raster task).
+    Failed,
+}
+
+struct RasterTilePayload {
     tile: CachedMapTile,
     renderer: vello::Renderer,
 }
@@ -1528,13 +1530,22 @@ fn step_raster_tile(job: &mut RasterJob, sink: &mpsc::Sender<RasterProgress>) ->
         .total_segments
         .checked_add(segments)
         .expect("GPU Map raster tile segment count overflowed");
-    let _ = sink.send(RasterProgress::Tile(Box::new(RasterTileProgress {
+    let _ = sink.send(RasterProgress {
         epoch: job.epoch,
         camera: job.camera,
-        tile,
-        renderer,
-    })));
+        kind: RasterProgressKind::Tile(Box::new(RasterTilePayload { tile, renderer })),
+    });
     job.next_tile < job.base_tiles.len()
+}
+
+fn log_raster_completion(job: &RasterJob) {
+    tracing::debug!(
+        elapsed_ms = job.started_at.elapsed().as_secs_f64() * 1_000.0,
+        tile_count = job.base_tiles.len(),
+        paths = job.total_paths,
+        segments = job.total_segments,
+        "completed tiled GPU map raster"
+    );
 }
 
 /// Drives `job` to completion one tile at a time.
@@ -1568,17 +1579,13 @@ fn drive_raster_job(
     if job.live_epoch.load(Ordering::Relaxed) != job.epoch {
         return;
     }
-    tracing::debug!(
-        elapsed_ms = job.started_at.elapsed().as_secs_f64() * 1_000.0,
-        tile_count = job.base_tiles.len(),
-        paths = job.total_paths,
-        segments = job.total_segments,
-        "completed tiled GPU map raster"
-    );
-    let _ = sink.send(RasterProgress::Finished {
+    log_raster_completion(&job);
+    let _ = sink.send(RasterProgress {
         epoch: job.epoch,
         camera: job.camera,
-        renderers: core::mem::take(&mut job.renderers),
+        kind: RasterProgressKind::Finished {
+            renderers: core::mem::take(&mut job.renderers),
+        },
     });
 }
 
@@ -1716,6 +1723,7 @@ impl MapGpuRenderer {
             return;
         }
         let epoch = job.epoch;
+        let camera = job.camera;
         let notify = {
             let redraw_handle = redraw_handle.clone();
             move || redraw_handle.request_redraw()
@@ -1731,7 +1739,11 @@ impl MapGpuRenderer {
             })
             .await;
             if !finished {
-                let _ = sender.send(RasterProgress::Failed { epoch });
+                let _ = sender.send(RasterProgress {
+                    epoch,
+                    camera,
+                    kind: RasterProgressKind::Failed,
+                });
             }
             redraw_handle.request_redraw();
         })
@@ -1744,11 +1756,74 @@ impl MapGpuRenderer {
             }))
             .is_ok();
             if !finished {
-                let _ = sender.send(RasterProgress::Failed { epoch });
+                let _ = sender.send(RasterProgress {
+                    epoch,
+                    camera,
+                    kind: RasterProgressKind::Failed,
+                });
             }
             redraw_handle.request_redraw();
         })
         .detach();
+    }
+
+    /// Schedules a raster job when `signature` has no matching texture and no
+    /// job is already running.
+    fn schedule_raster_job(&mut self, signature: Option<RasterSignature>) {
+        let Some(signature) = signature else {
+            return;
+        };
+        if self.raster_signature.as_ref() == Some(&signature)
+            || self.pending_raster_signature.is_some()
+        {
+            return;
+        }
+        tracing::debug!(
+            generation = signature.generation,
+            width = signature.viewport.width,
+            height = signature.viewport.height,
+            "scheduling asynchronous GPU map raster"
+        );
+        self.start_raster_job(signature);
+    }
+
+    /// Advances a queued render-thread raster job by one tile and drains any
+    /// streamed results, returning `true` when a job was stepped.
+    fn step_pending_raster_job(&mut self) -> bool {
+        let Some(mut job) = self.pending_raster_job.take() else {
+            return false;
+        };
+        let sender = self.raster_sender.clone();
+        let epoch = job.epoch;
+        match std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+            step_raster_tile(&mut job, &sender)
+        })) {
+            // Keep stepping while the device is alive; a bumped epoch means
+            // `setup` already rebuilt it and this job is dead.
+            Ok(true) if job.epoch == self.raster_epoch.load(Ordering::Relaxed) => {
+                self.pending_raster_job = Some(job);
+            }
+            Ok(true) => {}
+            Ok(false) => {
+                log_raster_completion(&job);
+                let _ = sender.send(RasterProgress {
+                    epoch,
+                    camera: job.camera,
+                    kind: RasterProgressKind::Finished {
+                        renderers: core::mem::take(&mut job.renderers),
+                    },
+                });
+            }
+            Err(_) => {
+                let _ = sender.send(RasterProgress {
+                    epoch,
+                    camera: job.camera,
+                    kind: RasterProgressKind::Failed,
+                });
+            }
+        }
+        self.drain_raster_progress();
+        true
     }
 
     fn drain_raster_progress(&mut self) {
@@ -1758,26 +1833,20 @@ impl MapGpuRenderer {
     }
 
     fn install_raster_progress(&mut self, progress: RasterProgress) {
-        match progress {
-            RasterProgress::Tile(progress) => {
-                let RasterTileProgress {
-                    epoch,
-                    camera,
-                    tile,
-                    renderer,
-                } = *progress;
-                if epoch != self.raster_epoch.load(Ordering::Relaxed) {
-                    tracing::debug!("discarded GPU map raster tile produced by a lost device");
-                    return;
-                }
+        if progress.epoch != self.raster_epoch.load(Ordering::Relaxed) {
+            tracing::debug!("discarded GPU map raster progress produced by a lost device");
+            return;
+        }
+        match progress.kind {
+            RasterProgressKind::Tile(payload) => {
                 let Some(signature) = self.pending_raster_signature.clone() else {
                     return;
                 };
-                self.raster_renderers.push(renderer);
+                self.raster_renderers.push(payload.renderer);
                 if self.raster_signature.as_ref() != Some(&signature) {
                     self.raster_signature = Some(signature);
                     self.cached_texture = Some(CachedMapTexture {
-                        camera,
+                        camera: progress.camera,
                         tiles: Vec::new(),
                     });
                 }
@@ -1785,17 +1854,9 @@ impl MapGpuRenderer {
                     .as_mut()
                     .expect("a raster signature implies an accumulating texture")
                     .tiles
-                    .push(tile);
+                    .push(payload.tile);
             }
-            RasterProgress::Finished {
-                epoch,
-                camera,
-                renderers,
-            } => {
-                if epoch != self.raster_epoch.load(Ordering::Relaxed) {
-                    tracing::debug!("discarded GPU map raster finished by a lost device");
-                    return;
-                }
+            RasterProgressKind::Finished { renderers } => {
                 self.raster_renderers.extend(renderers);
                 if let Some(signature) = self.pending_raster_signature.take() {
                     if self.raster_signature.as_ref() != Some(&signature) {
@@ -1804,20 +1865,22 @@ impl MapGpuRenderer {
                         // frame.
                         self.raster_signature = Some(signature);
                         self.cached_texture = Some(CachedMapTexture {
-                            camera,
+                            camera: progress.camera,
                             tiles: Vec::new(),
                         });
                     }
                     tracing::debug!("installed tiled GPU map raster");
                 }
             }
-            RasterProgress::Failed { epoch } => {
-                if epoch != self.raster_epoch.load(Ordering::Relaxed) {
-                    return;
+            RasterProgressKind::Failed => {
+                // Drop only state that belongs to the failed job: its partial
+                // tiles sit under its own signature, while a complete texture
+                // from an earlier job stays usable.
+                if self.raster_signature == self.pending_raster_signature {
+                    self.raster_signature = None;
+                    self.cached_texture = None;
                 }
                 self.pending_raster_signature = None;
-                self.raster_signature = None;
-                self.cached_texture = None;
                 tracing::debug!("GPU map raster task failed; rescheduling on the next frame");
             }
         }
@@ -2105,53 +2168,16 @@ impl GpuView for MapGpuRenderer {
             .resolve_frame(gpu_scalar(frame.width), gpu_scalar(frame.height));
         let signature = Self::raster_signature(&resolved);
         self.drain_raster_progress();
-        if let Some(signature) = signature.as_ref()
-            && self.raster_signature.as_ref() != Some(signature)
-            && self.pending_raster_signature.is_none()
-        {
-            tracing::debug!(
-                generation = signature.generation,
-                width = signature.viewport.width,
-                height = signature.viewport.height,
-                "scheduling asynchronous GPU map raster"
-            );
-            self.start_raster_job(signature.clone());
-        }
+        self.schedule_raster_job(signature);
         // A queued job advances one tile per render call — the only place a
         // thread-bound device's wgpu calls are valid — and each finished tile
         // is installed before the present below, so partial coverage reaches
-        // the screen while the rest of the map is still rasterizing.
-        if self.pending_raster_job.is_some() {
-            let sender = self.raster_sender.clone();
-            let mut job = self
-                .pending_raster_job
-                .take()
-                .expect("a pending raster job was just checked");
-            let epoch = job.epoch;
-            match std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
-                step_raster_tile(&mut job, &sender)
-            })) {
-                // Keep stepping while the device is alive; a bump of the
-                // epoch means `setup` already rebuilt it and this job is dead.
-                Ok(true) if job.epoch == self.raster_epoch.load(Ordering::Relaxed) => {
-                    self.pending_raster_job = Some(job);
-                }
-                Ok(true) => {}
-                Ok(false) => {
-                    let _ = sender.send(RasterProgress::Finished {
-                        epoch,
-                        camera: job.camera,
-                        renderers: core::mem::take(&mut job.renderers),
-                    });
-                }
-                Err(_) => {
-                    let _ = sender.send(RasterProgress::Failed { epoch });
-                }
-            }
-            self.drain_raster_progress();
-            if self.pending_raster_job.is_some() {
-                frame.request_redraw();
-            }
+        // the screen while the rest of the map is still rasterizing. Any step
+        // requests another frame: tiles may remain, and a job that just
+        // terminated — finished or failed — needs the next frame to install
+        // or reschedule it even when nothing else would redraw.
+        if self.step_pending_raster_job() {
+            frame.request_redraw();
         }
 
         match (resolved.camera, self.cached_texture.as_ref()) {
@@ -4346,11 +4372,11 @@ mod tests {
         let mut tiles = 0;
         let mut finished = false;
         for progress in receiver.try_iter() {
-            match progress {
-                RasterProgress::Tile { .. } => tiles += 1,
-                RasterProgress::Finished { .. } => finished = true,
-                RasterProgress::Failed { epoch } => {
-                    panic!("raster job must not fail (epoch {epoch})")
+            match progress.kind {
+                RasterProgressKind::Tile(..) => tiles += 1,
+                RasterProgressKind::Finished { .. } => finished = true,
+                RasterProgressKind::Failed => {
+                    panic!("raster job must not fail (epoch {})", progress.epoch)
                 }
             }
         }
@@ -4381,8 +4407,11 @@ mod tests {
         };
         drive_raster_job(job, &sender, true, &kill_device);
 
-        let mut progress = receiver.try_iter();
-        assert!(matches!(progress.next(), Some(RasterProgress::Tile { .. })));
+        let mut progress = receiver.try_iter().map(|progress| progress.kind);
+        assert!(matches!(
+            progress.next(),
+            Some(RasterProgressKind::Tile(..))
+        ));
         assert!(
             progress.next().is_none(),
             "no completion may follow a lost device"
@@ -4477,17 +4506,22 @@ mod tests {
     /// thread-bound adapter takes the `render`-thread path in production.
     /// Skips where the platform ships no headless GL: wgpu compiles no `gles`
     /// support on Apple targets, while Linux CI runs this against Mesa's
-    /// software rasterizer over EGL.
+    /// software rasterizer over EGL. The skip is logged so a probing failure
+    /// on CI cannot read as a pass.
     #[test]
     fn raster_job_streams_tiles_on_a_gl_device() {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::GL,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let Ok(adapter) =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-        else {
-            return;
+        let adapter = match pollster::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        ) {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                tracing::warn!(%error, "no headless GL adapter on this platform; skipping");
+                return;
+            }
         };
         assert_eq!(
             adapter.get_info().backend,
@@ -4500,7 +4534,7 @@ mod tests {
 
         let resources = create_raster_resources(&device, &queue);
         let live_epoch = Arc::new(AtomicU64::new(0));
-        let job = synthetic_raster_job(resources, &live_epoch, 3);
+        let job = synthetic_raster_job(resources.clone(), &live_epoch, 3);
         let (sender, receiver) = mpsc::channel();
 
         drive_raster_job(job, &sender, true, &|| {});
@@ -4508,11 +4542,11 @@ mod tests {
         let mut tiles = 0;
         let mut finished = false;
         for progress in receiver.try_iter() {
-            match progress {
-                RasterProgress::Tile { .. } => tiles += 1,
-                RasterProgress::Finished { .. } => finished = true,
-                RasterProgress::Failed { epoch } => {
-                    panic!("raster job must not fail (epoch {epoch})")
+            match progress.kind {
+                RasterProgressKind::Tile(..) => tiles += 1,
+                RasterProgressKind::Finished { .. } => finished = true,
+                RasterProgressKind::Failed => {
+                    panic!("raster job must not fail (epoch {})", progress.epoch)
                 }
             }
         }
@@ -4521,5 +4555,148 @@ mod tests {
             finished,
             "the job must report completion after the last tile"
         );
+
+        // The production GL path steps a queued job one tile per `render`
+        // call on the render thread — drive it through the same method.
+        let region = manhattan_region(0.030, 0.050);
+        let config = MapConfig {
+            region: Computed::constant(region),
+            annotations: Computed::constant(Vec::new()),
+            style: waterui_map::MapStyle::Standard,
+            user_location_visibility: MapVisibility::Hidden,
+            user_location: None,
+            interactivity: MapInteractivity::ReadOnly,
+            compass_visibility: MapVisibility::Hidden,
+            scale_visibility: MapVisibility::Hidden,
+            status: None,
+        };
+        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let mut renderer = MapGpuRenderer::new(MapScene::new(config, options), None);
+        let job = synthetic_raster_job(resources, &renderer.raster_epoch, 3);
+        let signature = job.signature.clone();
+        renderer.pending_raster_signature = Some(signature.clone());
+        renderer.pending_raster_job = Some(job);
+
+        // One tile installs per stepped frame, before the whole job finishes.
+        assert!(renderer.step_pending_raster_job());
+        assert_eq!(
+            renderer
+                .cached_texture
+                .as_ref()
+                .expect("a stepped tile installs immediately")
+                .tiles
+                .len(),
+            1
+        );
+        let mut steps = 1;
+        while renderer.step_pending_raster_job() {
+            steps += 1;
+            assert!(steps <= 6, "a three-tile job must terminate");
+        }
+        assert_eq!(renderer.raster_signature, Some(signature));
+        assert_eq!(
+            renderer
+                .cached_texture
+                .as_ref()
+                .expect("the completed raster must install")
+                .tiles
+                .len(),
+            3
+        );
+        assert!(renderer.pending_raster_job.is_none());
+        assert!(renderer.pending_raster_signature.is_none());
+        assert_eq!(
+            renderer.raster_renderers.len(),
+            3,
+            "each tile's Vello renderer must return to the pool"
+        );
+    }
+
+    /// A stepped job that dies mid-frame must still request the next frame —
+    /// otherwise a non-animating map sits with a cleared pending signature and
+    /// never reschedules the raster.
+    #[test]
+    fn a_failed_render_thread_raster_step_requests_the_next_frame() {
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("render-thread raster test requires a GPU");
+        let context = runtime.context();
+        let region = manhattan_region(0.030, 0.050);
+        let viewport = Viewport {
+            width: 800,
+            height: 600,
+        };
+        let config = MapConfig {
+            region: Computed::constant(region),
+            annotations: Computed::constant(Vec::new()),
+            style: waterui_map::MapStyle::Standard,
+            user_location_visibility: MapVisibility::Hidden,
+            user_location: None,
+            interactivity: MapInteractivity::ReadOnly,
+            compass_visibility: MapVisibility::Hidden,
+            scale_visibility: MapVisibility::Hidden,
+            status: None,
+        };
+        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let mut renderer = MapGpuRenderer::new(MapScene::new(config, options), None);
+        renderer.redraw_handle = Some(waterui_graphics::RedrawHandle::new());
+        renderer.gpu_calls_thread_bound = true;
+        renderer.raster_resources = Some(create_raster_resources(&context.device, &context.queue));
+        {
+            let mut state = renderer.map.state.borrow_mut();
+            state.prepared = Some(PreparedMap {
+                chrome: MapChrome {
+                    compass: MapVisibility::Hidden,
+                    scale: MapVisibility::Hidden,
+                },
+                style: MapStyle {
+                    sources: BTreeMap::new(),
+                    layers: Vec::new(),
+                },
+                camera: Camera::new(region, viewport, 0, 22),
+                tiles: SourceTiles::default(),
+                annotations: Vec::new(),
+                location: None,
+                cached_base_scene: Some(SceneRecording::new()),
+                raster_tiles: Arc::new(Vec::new()),
+            });
+        }
+
+        // A tile whose texture exceeds the device limit panics inside the
+        // step — the same failure a raster task surfaces as `Failed`.
+        let limit = context.device.limits().max_texture_dimension_2d;
+        let mut job = synthetic_raster_job(
+            create_raster_resources(&context.device, &context.queue),
+            &renderer.raster_epoch,
+            1,
+        );
+        job.base_tiles = Arc::new(vec![PreparedRasterTile {
+            scene: vello::Scene::new(),
+            layout: RasterTileLayout {
+                origin: (0, 0),
+                texture_size: (limit + 1, limit + 1),
+                scene_origin: (0.0, 0.0),
+            },
+        }]);
+        let signature = job.signature.clone();
+        renderer.pending_raster_signature = Some(signature.clone());
+        renderer.pending_raster_job = Some(job);
+
+        // The failed step reports a needed frame even though it terminated
+        // the job; render() turns that into a redraw request.
+        assert!(renderer.step_pending_raster_job());
+        assert!(renderer.pending_raster_job.is_none());
+        assert!(renderer.pending_raster_signature.is_none());
+        assert!(renderer.cached_texture.is_none());
+
+        // The next render() then reschedules the job without any external
+        // redraw, and the retried job installs its texture.
+        renderer.schedule_raster_job(Some(signature.clone()));
+        assert!(
+            renderer.pending_raster_job.is_some(),
+            "the render-thread path must re-queue the failed job"
+        );
+        assert!(renderer.step_pending_raster_job());
+        assert!(!renderer.step_pending_raster_job());
+        assert_eq!(renderer.raster_signature, Some(signature));
     }
 }
