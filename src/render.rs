@@ -1504,8 +1504,18 @@ fn rasterize_tile(
 /// Rasterizes the next tile of `job`, delivering it through `sink`.
 ///
 /// Returns `true` while tiles remain after this step; `false` once every tile
-/// has been sent, meaning the job is exhausted.
+/// has been sent, meaning the job is exhausted — or when the job's device
+/// epoch has advanced, meaning `setup` already rebuilt the context and every
+/// resource this job could touch belongs to a dead device.
 fn step_raster_tile(job: &mut RasterJob, sink: &mpsc::Sender<RasterProgress>) -> bool {
+    // wgpu reports `DeviceLost` errors only through the lost callback, so
+    // `create_texture` on a lost device silently returns an invalid handle —
+    // and the first `create_view` on it then raises a fatal validation
+    // error. No wgpu call may run once the epoch has advanced.
+    if job.live_epoch.load(Ordering::Relaxed) != job.epoch {
+        tracing::debug!("aborted GPU map raster: the device was lost mid-job");
+        return false;
+    }
     let index = job.next_tile;
     let Some(prepared) = job.base_tiles.as_slice().get(index) else {
         return false;
@@ -4415,6 +4425,34 @@ mod tests {
         assert!(
             progress.next().is_none(),
             "no completion may follow a lost device"
+        );
+    }
+
+    /// A step taken after `setup` rebuilt the context must not run any wgpu
+    /// call at all: on a lost device `create_texture` silently returns an
+    /// invalid handle and the next `create_view` raises a fatal validation
+    /// error, so the job stops before producing a tile.
+    #[test]
+    fn raster_step_never_touches_a_lost_device() {
+        let runtime =
+            pollster::block_on(GpuRuntime::new()).expect("raster step test requires a GPU");
+        let context = runtime.context();
+        let resources = create_raster_resources(&context.device, &context.queue);
+        let live_epoch = Arc::new(AtomicU64::new(0));
+        let mut job = synthetic_raster_job(resources, &live_epoch, 1);
+        let (sender, receiver) = mpsc::channel();
+
+        // The rebuild bumped the epoch before the job's next step.
+        live_epoch.fetch_add(1, Ordering::Relaxed);
+
+        assert!(
+            !step_raster_tile(&mut job, &sender),
+            "a job on a dead device must not rasterize"
+        );
+        assert_eq!(job.next_tile, 0, "no tile may be consumed");
+        assert!(
+            receiver.try_recv().is_err(),
+            "no tile may be produced on a dead device"
         );
     }
 

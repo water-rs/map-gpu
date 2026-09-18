@@ -1,3 +1,7 @@
+// Proving `Send` for the raster worker closure recurses through
+// `vello::Renderer`'s wgpu internals, which overflows the default limit.
+#![recursion_limit = "256"]
+
 //! GPU-drawn vector map realization for platforms without a native map primitive.
 //!
 //! The semantic [`waterui_map::Map`] API stays platform-neutral. A self-drawn

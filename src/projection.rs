@@ -229,7 +229,7 @@ mod tests {
         assert!(camera.zoom > 14.0);
         assert!(camera.tile_zoom > 14);
         let tiles = camera.visible_tiles(f64::from(TILE_OVERSCAN_PIXELS), 0, 14, TILE_SIZE);
-        assert!(!tiles.is_empty());
+        assert_ne!(tiles.len(), 0);
         assert!(tiles.iter().all(|tile| tile.z == 14));
     }
 
