@@ -25,7 +25,7 @@ use rayon::prelude::*;
 use shaderloom::CompiledShader;
 use waterui_core::animation::Animation;
 use waterui_graphics::{
-    Glyph, GlyphRun, GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent,
+    DeviceLoss, Glyph, GlyphRun, GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent,
     SceneInvalidator, SceneRecording, VelloScene2D, gpu_surface::GestureState,
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
@@ -1262,6 +1262,10 @@ struct CachedMapTexture {
 struct RasterResources {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// Whether `device` has been reported lost. The raster worker runs off
+    /// the frame path, where nothing rebuilds on its behalf: it asks this
+    /// before every tile and stops once the device is gone.
+    device_loss: DeviceLoss,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 }
@@ -1283,6 +1287,15 @@ struct RasterJob {
     started_at: Instant,
     total_paths: u64,
     total_segments: u64,
+}
+
+impl RasterJob {
+    /// Whether the device this job rasterizes on is gone — reported lost by
+    /// the driver, or already replaced by a rebuilt context's `setup`.
+    fn is_device_dead(&self) -> bool {
+        self.live_epoch.load(Ordering::Relaxed) != self.epoch
+            || self.resources.device_loss.is_lost()
+    }
 }
 
 /// One increment of raster work delivered back to the renderer.
@@ -1511,8 +1524,11 @@ fn step_raster_tile(job: &mut RasterJob, sink: &mpsc::Sender<RasterProgress>) ->
     // wgpu reports `DeviceLost` errors only through the lost callback, so
     // `create_texture` on a lost device silently returns an invalid handle —
     // and the first `create_view` on it then raises a fatal validation
-    // error. No wgpu call may run once the epoch has advanced.
-    if job.live_epoch.load(Ordering::Relaxed) != job.epoch {
+    // error. No wgpu call may run once the device is gone. The epoch only
+    // advances when the rebuilt context runs `setup` again, which waits for
+    // the next frame; the loss handle reports the driver's callback the
+    // moment it fires, so a worker mid-job stops before that frame comes.
+    if job.is_device_dead() {
         tracing::debug!("aborted GPU map raster: the device was lost mid-job");
         return false;
     }
@@ -1573,20 +1589,42 @@ fn drive_raster_job(
     drain_queue: bool,
     notify: &dyn Fn(),
 ) {
-    while step_raster_tile(&mut job, sink) {
-        notify();
-        if job.live_epoch.load(Ordering::Relaxed) != job.epoch {
+    loop {
+        // A loss that lands between the check at the top of a step and the
+        // step's wgpu calls still surfaces as a panic inside wgpu — on this
+        // thread, where no frame guard runs. The same rule as the frame
+        // path's `run_gpu_frame`: a panic alongside a confirmed loss ends
+        // the job; any other panic is a bug and propagates.
+        let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let more = step_raster_tile(&mut job, sink);
+            if more {
+                notify();
+                if drain_queue {
+                    let _ = job
+                        .resources
+                        .device
+                        .poll(wgpu::PollType::wait_indefinitely());
+                }
+            }
+            more
+        }));
+        match step {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(payload) => {
+                if job.resources.device_loss.is_lost() {
+                    tracing::debug!("aborted GPU map raster: the device was lost mid-tile");
+                    return;
+                }
+                std::panic::resume_unwind(payload);
+            }
+        }
+        if job.is_device_dead() {
             tracing::debug!("aborted GPU map raster: the device was lost mid-job");
             return;
         }
-        if drain_queue {
-            let _ = job
-                .resources
-                .device
-                .poll(wgpu::PollType::wait_indefinitely());
-        }
     }
-    if job.live_epoch.load(Ordering::Relaxed) != job.epoch {
+    if job.is_device_dead() {
         return;
     }
     log_raster_completion(&job);
@@ -2014,7 +2052,11 @@ impl MapGpuRenderer {
     }
 }
 
-fn create_raster_resources(device: &wgpu::Device, queue: &wgpu::Queue) -> RasterResources {
+fn create_raster_resources(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    device_loss: DeviceLoss,
+) -> RasterResources {
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("waterui_map_camera_bind_group_layout"),
         entries: &[
@@ -2059,13 +2101,14 @@ fn create_raster_resources(device: &wgpu::Device, queue: &wgpu::Queue) -> Raster
     RasterResources {
         device: device.clone(),
         queue: queue.clone(),
+        device_loss,
         bind_group_layout,
         sampler,
     }
 }
 
 fn create_camera_resources(ctx: &GpuContext<'_>) -> (wgpu::RenderPipeline, RasterResources) {
-    let resources = create_raster_resources(ctx.device, ctx.queue);
+    let resources = create_raster_resources(ctx.device, ctx.queue, ctx.device_loss.clone());
     let pipeline_layout = ctx
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -4376,7 +4419,8 @@ mod tests {
         let runtime =
             pollster::block_on(GpuRuntime::new()).expect("raster streaming test requires a GPU");
         let context = runtime.context();
-        let resources = create_raster_resources(&context.device, &context.queue);
+        let resources =
+            create_raster_resources(&context.device, &context.queue, context.device_loss());
         let live_epoch = Arc::new(AtomicU64::new(0));
         let job = synthetic_raster_job(resources, &live_epoch, 3);
         let (sender, receiver) = mpsc::channel();
@@ -4408,7 +4452,8 @@ mod tests {
         let runtime =
             pollster::block_on(GpuRuntime::new()).expect("raster abort test requires a GPU");
         let context = runtime.context();
-        let resources = create_raster_resources(&context.device, &context.queue);
+        let resources =
+            create_raster_resources(&context.device, &context.queue, context.device_loss());
         let live_epoch = Arc::new(AtomicU64::new(0));
         let job = synthetic_raster_job(resources, &live_epoch, 3);
         let (sender, receiver) = mpsc::channel();
@@ -4441,7 +4486,8 @@ mod tests {
         let runtime =
             pollster::block_on(GpuRuntime::new()).expect("raster step test requires a GPU");
         let context = runtime.context();
-        let resources = create_raster_resources(&context.device, &context.queue);
+        let resources =
+            create_raster_resources(&context.device, &context.queue, context.device_loss());
         let live_epoch = Arc::new(AtomicU64::new(0));
         let mut job = synthetic_raster_job(resources, &live_epoch, 1);
         let (sender, receiver) = mpsc::channel();
@@ -4457,6 +4503,36 @@ mod tests {
         assert!(
             receiver.try_recv().is_err(),
             "no tile may be produced on a dead device"
+        );
+    }
+
+    /// The driver's lost callback reaches the worker through the handle it
+    /// took at setup, before any frame has rebuilt the context and bumped
+    /// the epoch: the job stops without touching the device.
+    #[test]
+    fn raster_step_stops_once_the_driver_reports_the_device_lost() {
+        let runtime =
+            pollster::block_on(GpuRuntime::new()).expect("raster step test requires a GPU");
+        let context = runtime.context();
+        let resources =
+            create_raster_resources(&context.device, &context.queue, context.device_loss());
+        let live_epoch = Arc::new(AtomicU64::new(0));
+        let mut job = synthetic_raster_job(resources, &live_epoch, 1);
+        let (sender, receiver) = mpsc::channel();
+
+        // The driver reported the loss; no frame has run since, so the epoch
+        // still matches.
+        context.mark_device_lost_for_testing("simulated device loss");
+        assert_eq!(job.live_epoch.load(Ordering::Relaxed), job.epoch);
+
+        assert!(
+            !step_raster_tile(&mut job, &sender),
+            "a job on a lost device must not rasterize"
+        );
+        assert_eq!(job.next_tile, 0, "no tile may be consumed");
+        assert!(
+            receiver.try_recv().is_err(),
+            "no tile may be produced on a lost device"
         );
     }
 
@@ -4484,7 +4560,7 @@ mod tests {
 
         let live_epoch = Arc::new(AtomicU64::new(0));
         let job = synthetic_raster_job(
-            create_raster_resources(&context.device, &context.queue),
+            create_raster_resources(&context.device, &context.queue, context.device_loss()),
             &live_epoch,
             3,
         );
@@ -4516,7 +4592,7 @@ mod tests {
         // Results stamped with a lost device's epoch must not touch the cache.
         let stale_epoch = Arc::new(AtomicU64::new(9));
         let stale_job = synthetic_raster_job(
-            create_raster_resources(&context.device, &context.queue),
+            create_raster_resources(&context.device, &context.queue, context.device_loss()),
             &stale_epoch,
             1,
         );
@@ -4574,7 +4650,7 @@ mod tests {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("the GL adapter must provide a device");
 
-        let resources = create_raster_resources(&device, &queue);
+        let resources = create_raster_resources(&device, &queue, DeviceLoss::default());
         let live_epoch = Arc::new(AtomicU64::new(0));
         let job = synthetic_raster_job(resources.clone(), &live_epoch, 3);
         let (sender, receiver) = mpsc::channel();
@@ -4682,7 +4758,11 @@ mod tests {
         let mut renderer = MapGpuRenderer::new(MapScene::new(config, options), None);
         renderer.redraw_handle = Some(waterui_graphics::RedrawHandle::new());
         renderer.gpu_calls_thread_bound = true;
-        renderer.raster_resources = Some(create_raster_resources(&context.device, &context.queue));
+        renderer.raster_resources = Some(create_raster_resources(
+            &context.device,
+            &context.queue,
+            context.device_loss(),
+        ));
         {
             let mut state = renderer.map.state.borrow_mut();
             state.prepared = Some(PreparedMap {
@@ -4707,7 +4787,7 @@ mod tests {
         // step — the same failure a raster task surfaces as `Failed`.
         let limit = context.device.limits().max_texture_dimension_2d;
         let mut job = synthetic_raster_job(
-            create_raster_resources(&context.device, &context.queue),
+            create_raster_resources(&context.device, &context.queue, context.device_loss()),
             &renderer.raster_epoch,
             1,
         );
