@@ -1738,8 +1738,12 @@ impl MapGpuRenderer {
             let redraw_handle = redraw_handle.clone();
             move || redraw_handle.request_redraw()
         };
+        // The job runs on `blocking`'s pool through `unblock`, but the future
+        // itself is a `spawn_local` task so hosts that pace on
+        // `outstanding_local_tasks` — preview and test captures — wait for the
+        // raster to publish instead of snapshotting the bare surface.
         #[cfg(not(target_arch = "wasm32"))]
-        executor_core::spawn(async move {
+        spawn_local(async move {
             let worker_sender = sender.clone();
             let finished = blocking::unblock(move || {
                 std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
