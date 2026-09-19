@@ -7,8 +7,14 @@ use std::{
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
-    time::Instant,
 };
+
+// `std::time::Instant` panics on `wasm32-unknown-unknown`; `web_time` routes
+// to `performance.now()` there and is API-identical.
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use executor_core::spawn_local;
 use futures::{StreamExt as _, future::join_all, stream};
