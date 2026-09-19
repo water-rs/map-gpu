@@ -35,6 +35,7 @@ use crate::{
     projection::{Camera, TILE_OVERSCAN_PIXELS, TileId, Viewport},
     style::{LayerKind, MapStyle, SourceKind, StyleLayer, TileSource},
     tile::{DemTile, RasterTile, TileFeature, VectorTile},
+    unblock,
 };
 
 /// Every decoded tile for one prepared viewport, grouped by source name.
@@ -397,7 +398,7 @@ impl PreparedMap {
                 Ok::<_, MapLoadError>(tiles)
             },
         )?;
-        let (style, tiles, cached_base_scene, raster_tiles) = blocking::unblock(move || {
+        let (style, tiles, cached_base_scene, raster_tiles) = unblock(move || {
             let (cached_base_scene, raster_tiles) = rayon::join(
                 || build_base_scene(&style, camera, &tiles),
                 || build_raster_tiles(&style, camera, &tiles),
@@ -661,7 +662,7 @@ where
                 options.network_request_timeout(),
             )
             .await?;
-            let tile = Arc::new(blocking::unblock(move || decode(id, bytes)).await?);
+            let tile = Arc::new(unblock(move || decode(id, bytes)).await?);
             let mut cache = cache.borrow_mut();
             select(&mut cache).insert(source_name, &tile);
             cache.enforce_budget();
@@ -1783,7 +1784,7 @@ impl MapGpuRenderer {
         #[cfg(not(target_arch = "wasm32"))]
         spawn_local(async move {
             let worker_sender = sender.clone();
-            let finished = blocking::unblock(move || {
+            let finished = unblock(move || {
                 std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
                     drive_raster_job(job, &worker_sender, true, &notify);
                 }))
@@ -2204,7 +2205,7 @@ impl GpuView for MapGpuRenderer {
             let job = self.take_raster_job(signature);
             let sender = self.raster_sender.clone();
             let drain_queue = !self.gpu_calls_thread_bound;
-            blocking::unblock(move || {
+            unblock(move || {
                 drive_raster_job(job, &sender, drain_queue, &|| {});
             })
             .await;
