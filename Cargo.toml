@@ -58,10 +58,10 @@ thiserror = "2.0.19"
 tracing = "0.1.44"
 url = "2.5"
 vello = "0.9"
-waterui-core = { version = "0.3.2" }
-waterui-graphics = { version = "0.4.1", features = ["gpu"] }
-waterui-map = { version = "0.1.2" }
-waterui-url = { version = "0.3.1", features = ["std"] }
+waterui-core = { version = "0.5.0" }
+waterui-graphics = { version = "0.5.0", features = ["gpu"] }
+waterui-map = { version = "0.5.0" }
+waterui-url = { version = "0.5.0", features = ["std"] }
 wgpu = "29.0.4"
 
 [build-dependencies]
@@ -84,8 +84,8 @@ zenwave = { version = "0.6.1", default-features = false }
 [dev-dependencies]
 num-traits = { version = "0.2", default-features = false }
 pollster = "1.0"
-waterui = "0.4.1"
-waterui-testing = "0.4.1"
+waterui = "0.5.0"
+waterui-testing = "0.5.0"
 
 [package.metadata.waterui.permissions]
 internet = { reason = "downloads map styles and vector tiles" }
@@ -108,40 +108,40 @@ ignored = ["getrandom", "shaderloom"]
 # `waterui-graphics` was built with these forks, and git dependencies do not
 # carry their own patch table, so they are repeated here.
 [patch.crates-io]
-waterui-core = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-map = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-url = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
+waterui-core = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-map = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-url = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
 
 # The dev-dependency test graph (`tests/map_semantics.rs`) widens the same
 # pin: `waterui-testing` mounts views on Hydrolysis, and the facade, the
 # testing harness, and the two backend crates name every framework member
 # below through registry requirements — each one resolves to the same
 # monorepo commit so the graph still carries exactly one copy of each.
-waterui = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-form = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-media = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-testing = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-text = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-video = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
-waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "f004c2fd86280ddf678124c59d984868a9d3f4c6" }
+waterui = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-form = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-media = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-testing = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-text = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-video = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "d6807a87c39b2b3f6e992cd9f205f93a2155ed8b" }
 
 # Same-wave satellites the pinned revision names: the backend pair
 # `waterui-testing` requires, and the extracted crates the facade reaches
