@@ -1,3 +1,7 @@
+// Proving `Send` for the raster worker closure recurses through
+// `vello::Renderer`'s wgpu internals, which overflows the default limit.
+#![recursion_limit = "256"]
+
 //! GPU-drawn vector map realization for platforms without a native map primitive.
 //!
 //! The semantic [`waterui_map::Map`] API stays platform-neutral. A self-drawn
@@ -37,6 +41,29 @@ use waterui_map::{Coordinate, MapConfig, MapStyle, Region};
 use waterui_url::Url;
 
 pub use render::{MapScene, map_surface};
+
+/// Runs `f` off the async executor on native targets via `blocking::unblock`.
+/// `blocking` cannot spawn on wasm32 — there is no thread to offload to — so
+/// the work runs inline on the current task instead.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn unblock<T, F>(f: F) -> blocking::Task<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    blocking::unblock(f)
+}
+
+/// Runs `f` off the async executor on native targets via `blocking::unblock`.
+/// `blocking` cannot spawn on wasm32 — there is no thread to offload to — so
+/// the work runs inline on the current task instead.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn unblock<T, F>(f: F) -> impl core::future::Future<Output = T>
+where
+    F: FnOnce() -> T,
+{
+    core::future::ready(f())
+}
 
 /// Retry policy for transient style, source, and vector-tile request failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

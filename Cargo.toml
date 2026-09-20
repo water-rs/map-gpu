@@ -1,6 +1,6 @@
 [package]
 name = "waterui-map-gpu"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Lexo Liu <me@lexo.cool>"]
@@ -46,26 +46,26 @@ kurbo = "0.13"
 lru = "0.16"
 maplibre-expr = "0.3.2"
 mvt-reader = "2.4.0"
-nami = "0.11.0"
+nami = "0.11.2"
 native-executor = "0.8.0"
 parley = { version = "0.11", default-features = false, features = ["system"] }
 peniko = "0.6"
 rayon = "1.12"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = "1.0"
-shaderloom = "0.1.0"
+shaderloom = "0.1.2"
 thiserror = "2.0.19"
 tracing = "0.1.44"
 url = "2.5"
 vello = "0.9"
-waterui-core = { version = "0.3.0" }
-waterui-graphics = { version = "0.4.0", features = ["gpu"] }
-waterui-map = { version = "0.1.0" }
-waterui-url = { version = "0.3.0", features = ["std"] }
+waterui-core = { version = "0.5.0" }
+waterui-graphics = { version = "0.5.0", features = ["gpu"] }
+waterui-map = { version = "0.5.0" }
+waterui-url = { version = "0.5.0", features = ["std"] }
 wgpu = "29.0.4"
 
 [build-dependencies]
-shaderloom = { version = "0.1.0", features = ["build"] }
+shaderloom = { version = "0.1.2", features = ["build"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend", "native-tls"] }
@@ -78,11 +78,14 @@ zenwave = { version = "0.6.1", default-features = false, features = ["hyper-back
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+web-time = "1"
 zenwave = { version = "0.6.1", default-features = false }
 
 [dev-dependencies]
 num-traits = { version = "0.2", default-features = false }
 pollster = "1.0"
+waterui = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-testing = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
 
 [package.metadata.waterui.permissions]
 internet = { reason = "downloads map styles and vector tiles" }
@@ -90,20 +93,61 @@ internet = { reason = "downloads map styles and vector tiles" }
 [package.metadata.cargo-machete]
 ignored = ["getrandom", "shaderloom"]
 
+# The 0.5.0 framework release is in flight from b25438ae on `water-rs/waterui`
+# `main`; release-plz publishes the `waterui-*` version group from that commit
+# in dependency order. Until every crate this graph resolves is on crates.io,
+# all of them are pinned to that same commit: the framework crates reach each
+# other by path, so a registry copy beside a git twin would compile two
+# `waterui-core`. Sibling components and the hydrolysis pair are pinned to their
+# own `release/0.5.0-wave` commits, which require the same framework versions.
+# Publishing ignores this table; it drops once the wave is on the registry.
 [patch.crates-io]
-# Tests and examples link the framework; every workspace crate comes from the
-# same monorepo commit so the graph carries exactly one copy of each.
-waterui-map-gpu = { path = "." }
-waterui-core = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-macros = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-map = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-str = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-waterui-url = { git = "https://github.com/water-rs/waterui.git", rev = "c6df302408b42f18be1ea7692d0438973f1e0e62" }
-# Sibling extracted crates until they release against the 0.4 foundation (waterui#533).
-# Third-party forks the monorepo itself patches; git dependencies do not carry
-# their own patch table, so they are repeated here.
-block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
+waterui-core = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-map = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-url = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+
+# The dev-dependency test graph (`tests/map_semantics.rs`) widens the same
+# pin: `waterui-testing` mounts views on Hydrolysis, and the facade, the
+# testing harness, and the two backend crates name every framework member
+# below through registry requirements — each one resolves to the same
+# monorepo commit so the graph still carries exactly one copy of each.
+waterui = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-form = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-media = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-testing = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-text = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-video = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "b25438ae309d69c8a91c6ecc2580723ed1dd792b" }
+
+# Same-wave satellites the pinned revision names: the backend pair
+# `waterui-testing` requires, and the extracted crates the facade reaches
+# through registry requirements. The revisions are the ones the pinned
+# monorepo's own `[patch.crates-io]` declares — except `hydrolysis` and
+# `hydrolysis-m3`: the monorepo's pins predate its `DeviceLoss` addition to
+# `GpuContext::new` and no longer build against f004c2f, so these are the
+# first revisions whose own patch tables pin f004c2f.
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "71f18452543ea6501de73f003dafb6235f4ba3a7" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "38499ef90b0a9e0d3b413fa78350325e88e21044" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "6b3077431d2edccfd6c7d0b4fb45d69bd1d5bc56" }
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "12553db2de92e66ff919f56c6dd98ba42f757a00" }
 vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
 vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
 vello_common = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }

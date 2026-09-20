@@ -14,6 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -35,7 +38,8 @@ jobs:
         if: runner.os == 'Windows'
         uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-targets --all-features
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --all-targets --all-features
 
   lint:
     name: Lint
