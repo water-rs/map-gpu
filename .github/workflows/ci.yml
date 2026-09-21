@@ -60,8 +60,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
+      # The floor is whatever `Cargo.toml` declares, read here rather than
+      # written twice: a hardcoded version in CI drifts from the manifest and
+      # then gates a number nobody declared.
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ -z "$version" ]; then
+            echo "::error::Cargo.toml declares no rust-version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Installing a toolchain is not building with it: the action only
+          # sets the rustup default, and this repository's
+          # `rust-toolchain.toml` overrides the default for every cargo
+          # invocation inside the checkout. Without this env var the job
+          # compiled on `stable` and proved nothing about the floor.
+          echo "RUSTUP_TOOLCHAIN=$version" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
       - name: Install Linux dependencies
         uses: ./.github/actions/linux-deps
       - uses: Swatinem/rust-cache@v2
+      # Proof in the log that the floor is what compiled, so a later change to
+      # the pin or the action cannot quietly make this a second stable run.
+      - name: Show the toolchain this job builds with
+        run: rustc --version && cargo --version
       - run: cargo check --workspace --all-features
