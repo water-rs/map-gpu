@@ -6,7 +6,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use url::Url;
 
-use crate::{MapGpuOptions, MapLoadError, network};
+use crate::{MapGpuOptions, MapLoadError, network, unblock};
 
 #[derive(Debug, Deserialize)]
 struct RawStyle {
@@ -186,7 +186,7 @@ impl MapStyle {
         )
         .await?;
         let style_url_text = style_url.to_string();
-        let raw: RawStyle = blocking::unblock(move || parse_json(style_url_text, &bytes)).await?;
+        let raw: RawStyle = unblock(move || parse_json(style_url_text, &bytes)).await?;
         if raw.version != 8 {
             return Err(MapLoadError::Unsupported(format!(
                 "MapLibre style version {} (expected 8)",
@@ -212,7 +212,7 @@ impl MapStyle {
                 .into_iter()
                 .collect::<Result<BTreeMap<_, _>, _>>()
         };
-        let layers = blocking::unblock(move || {
+        let layers = unblock(move || {
             raw.layers
                 .into_iter()
                 .map(compile_layer)
@@ -300,8 +300,7 @@ async fn resolve_source(
     )
     .await?;
     let tilejson_url_text = tilejson_url.to_string();
-    let tilejson: TileJson =
-        blocking::unblock(move || parse_json(tilejson_url_text, &bytes)).await?;
+    let tilejson: TileJson = unblock(move || parse_json(tilejson_url_text, &bytes)).await?;
     Ok(TileSource {
         kind,
         templates: resolve_templates(&tilejson_url, tilejson.tiles)?,
