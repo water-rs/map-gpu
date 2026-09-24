@@ -1038,7 +1038,7 @@ impl MapScene {
             .filter(|_| config.user_location_visibility.is_visible())
             .unwrap_or_else(|| Computed::constant(None));
         let invalidator = Rc::new(RefCell::new(None::<SceneInvalidator>));
-        let initial_region = config.region.get();
+        let initial_region = config.region.snapshot();
         let mut watchers = Vec::with_capacity(4);
         for signal in [
             &config.region as &dyn ErasedRedrawSignal,
@@ -1083,7 +1083,7 @@ impl MapScene {
     }
 
     fn request(&self, viewport: Viewport) {
-        let region = self.request_region.get();
+        let region = self.request_region.snapshot();
         let key = RequestKey { region, viewport };
         if self.state.borrow().request.as_ref() == Some(&key) {
             return;
@@ -1132,7 +1132,7 @@ impl MapScene {
 
     fn resolve_frame(&mut self, width: f32, height: f32) -> ResolvedMapFrame {
         let size = (width.max(1.0), height.max(1.0));
-        if self.viewport_size.get() != Some(size) {
+        if self.viewport_size.snapshot() != Some(size) {
             self.viewport_size.set(Some(size));
         }
         let viewport = Viewport {
@@ -1140,8 +1140,8 @@ impl MapScene {
             height: size.1 as u32,
         };
         let (region, animating) = self.camera_motion.update(
-            self.region.get(),
-            self.animate_camera_changes.get(),
+            self.region.snapshot(),
+            self.animate_camera_changes.snapshot(),
             &self.options.camera_animation,
         );
         if !animating {
@@ -1172,8 +1172,8 @@ impl MapScene {
             viewport,
             camera,
             prepared_generation: state.prepared_generation,
-            annotations: self.annotations.get(),
-            location: self.location.get(),
+            annotations: self.annotations.snapshot(),
+            location: self.location.snapshot(),
             animating,
         }
     }
@@ -1348,7 +1348,7 @@ impl SurfaceCameraGesture {
         viewport: Viewport,
     ) {
         if gesture.active && self.origin.is_none() {
-            self.origin = Some(interaction.region.get());
+            self.origin = Some(interaction.region.snapshot());
             interaction.animate_camera_changes.set(false);
         }
         let Some(origin) = self.origin else {
@@ -2200,11 +2200,11 @@ impl GpuView for MapGpuRenderer {
                     annotations: self
                         .map
                         .annotations
-                        .get()
+                        .snapshot()
                         .iter()
                         .map(RasterAnnotation::from)
                         .collect(),
-                    location: self.map.location.get(),
+                    location: self.map.location.snapshot(),
                 }
             };
             self.pending_raster_signature = Some(signature.clone());
@@ -4094,11 +4094,11 @@ mod tests {
         };
 
         surface_gesture.apply(&controller, moving, viewport);
-        let visible = controller.region.get();
+        let visible = controller.region.snapshot();
         assert!((visible.center.latitude.get() - 40.761).abs() < 1e-9);
         assert!((visible.center.longitude.get() + 73.9905).abs() < 1e-9);
         assert_eq!(
-            controller.settled_region.get(),
+            controller.settled_region.snapshot(),
             manhattan_region(0.030, 0.050)
         );
 
@@ -4110,12 +4110,12 @@ mod tests {
             },
             viewport,
         );
-        assert_eq!(controller.region.get(), visible);
-        assert_eq!(controller.settled_region.get(), visible);
+        assert_eq!(controller.region.snapshot(), visible);
+        assert_eq!(controller.settled_region.snapshot(), visible);
 
         surface_gesture.apply(&controller, GestureState::new(), viewport);
-        assert_eq!(controller.region.get(), visible);
-        assert_eq!(controller.settled_region.get(), visible);
+        assert_eq!(controller.region.snapshot(), visible);
+        assert_eq!(controller.settled_region.snapshot(), visible);
     }
 
     #[test]
@@ -4135,7 +4135,7 @@ mod tests {
         };
 
         surface_gesture.apply(&controller, pinching, viewport);
-        let visible = controller.region.get();
+        let visible = controller.region.snapshot();
         assert!((visible.latitude_delta - 0.015).abs() < 1e-9);
         assert!((visible.longitude_delta - 0.025).abs() < 1e-9);
         // The pinch focus sits at the viewport center, so the center holds.
@@ -4151,7 +4151,7 @@ mod tests {
             },
             viewport,
         );
-        assert_eq!(controller.settled_region.get(), visible);
+        assert_eq!(controller.settled_region.snapshot(), visible);
     }
 
     #[test]
