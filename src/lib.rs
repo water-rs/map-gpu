@@ -858,7 +858,10 @@ mod tests {
             translation: GesturePoint::new(100.0, 50.0),
             velocity: GesturePoint::new(0.0, 0.0),
         });
-        assert_eq!(controller.settled_region.snapshot(), controller.region.snapshot());
+        assert_eq!(
+            controller.settled_region.snapshot(),
+            controller.region.snapshot()
+        );
         assert!(!controller.animate_camera_changes.snapshot());
     }
 
