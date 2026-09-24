@@ -453,7 +453,7 @@ pub(crate) struct MapGestureController {
 
 impl MapGestureController {
     fn new(source: &Computed<Region>) -> Self {
-        let initial = source.get();
+        let initial = source.snapshot();
         let region = binding(initial);
         let settled_region = binding(initial);
         let animate_camera_changes = binding(false);
@@ -499,13 +499,13 @@ impl MapGestureController {
         match event.phase {
             GesturePhase::Started => {
                 self.animate_camera_changes.set(false);
-                self.gesture_origin.set(self.region.get());
+                self.gesture_origin.set(self.region.snapshot());
             }
             GesturePhase::Updated | GesturePhase::Ended => {
-                let Some((width, height)) = self.viewport.get() else {
+                let Some((width, height)) = self.viewport.snapshot() else {
                     return;
                 };
-                let origin = self.gesture_origin.get();
+                let origin = self.gesture_origin.snapshot();
                 let region = translated_region(
                     origin,
                     event.translation.x,
@@ -519,7 +519,7 @@ impl MapGestureController {
                     _ => unreachable!("drag region is produced only while updating or ending"),
                 }
             }
-            GesturePhase::Cancelled => self.settle_region(self.region.get()),
+            GesturePhase::Cancelled => self.settle_region(self.region.snapshot()),
         }
     }
 
@@ -527,13 +527,13 @@ impl MapGestureController {
         match event.phase {
             GesturePhase::Started => {
                 self.animate_camera_changes.set(false);
-                self.gesture_origin.set(self.region.get());
+                self.gesture_origin.set(self.region.snapshot());
             }
             GesturePhase::Updated | GesturePhase::Ended => {
-                let Some((width, height)) = self.viewport.get() else {
+                let Some((width, height)) = self.viewport.snapshot() else {
                     return;
                 };
-                let origin = self.gesture_origin.get();
+                let origin = self.gesture_origin.snapshot();
                 let region = magnified_region(
                     origin,
                     f64::from(event.scale),
@@ -552,7 +552,7 @@ impl MapGestureController {
                     }
                 }
             }
-            GesturePhase::Cancelled => self.settle_region(self.region.get()),
+            GesturePhase::Cancelled => self.settle_region(self.region.snapshot()),
         }
     }
 }
@@ -847,10 +847,10 @@ mod tests {
             velocity: GesturePoint::new(0.0, 0.0),
         });
 
-        let region = controller.region.get();
+        let region = controller.region.snapshot();
         assert!((region.center.latitude.get() - 40.761).abs() < 1e-9);
         assert!((region.center.longitude.get() + 73.9905).abs() < 1e-9);
-        assert_eq!(controller.settled_region.get(), manhattan_region());
+        assert_eq!(controller.settled_region.snapshot(), manhattan_region());
 
         controller.handle_drag(&DragEvent {
             phase: GesturePhase::Ended,
@@ -858,8 +858,8 @@ mod tests {
             translation: GesturePoint::new(100.0, 50.0),
             velocity: GesturePoint::new(0.0, 0.0),
         });
-        assert_eq!(controller.settled_region.get(), controller.region.get());
-        assert!(!controller.animate_camera_changes.get());
+        assert_eq!(controller.settled_region.snapshot(), controller.region.snapshot());
+        assert!(!controller.animate_camera_changes.snapshot());
     }
 
     #[test]
@@ -879,7 +879,7 @@ mod tests {
             velocity: 0.0,
         });
 
-        let region = controller.region.get();
+        let region = controller.region.snapshot();
         assert_eq!(region.center, manhattan_region().center);
         assert!((region.latitude_delta - 0.015).abs() < 1e-12);
         assert!((region.longitude_delta - 0.025).abs() < 1e-12);
@@ -901,7 +901,7 @@ mod tests {
             scale: 2.0,
             velocity: 0.0,
         });
-        let visible = controller.region.get();
+        let visible = controller.region.snapshot();
 
         controller.handle_magnification(&MagnificationEvent {
             phase: GesturePhase::Cancelled,
@@ -910,8 +910,8 @@ mod tests {
             velocity: 0.0,
         });
 
-        assert_eq!(controller.region.get(), visible);
-        assert_eq!(controller.settled_region.get(), visible);
+        assert_eq!(controller.region.snapshot(), visible);
+        assert_eq!(controller.settled_region.snapshot(), visible);
     }
 
     #[test]
@@ -922,8 +922,8 @@ mod tests {
 
         source.set(target);
 
-        assert_eq!(controller.region.get(), target);
-        assert_eq!(controller.settled_region.get(), target);
-        assert!(controller.animate_camera_changes.get());
+        assert_eq!(controller.region.snapshot(), target);
+        assert_eq!(controller.settled_region.snapshot(), target);
+        assert!(controller.animate_camera_changes.snapshot());
     }
 }
