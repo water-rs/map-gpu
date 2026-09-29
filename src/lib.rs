@@ -819,7 +819,7 @@ mod tests {
         assert!(semantics.role.is_none());
     }
 
-    use waterui_core::gesture::GesturePoint;
+    use waterui_core::gesture::{GesturePoint, PointerButton};
 
     fn manhattan_region() -> Region {
         Region::new(
@@ -839,12 +839,14 @@ mod tests {
             location: GesturePoint::new(500.0, 250.0),
             translation: GesturePoint::new(0.0, 0.0),
             velocity: GesturePoint::new(0.0, 0.0),
+            button: PointerButton::Primary,
         });
         controller.handle_drag(&DragEvent {
             phase: GesturePhase::Updated,
             location: GesturePoint::new(600.0, 300.0),
             translation: GesturePoint::new(100.0, 50.0),
             velocity: GesturePoint::new(0.0, 0.0),
+            button: PointerButton::Primary,
         });
 
         let region = controller.region.snapshot();
@@ -857,6 +859,7 @@ mod tests {
             location: GesturePoint::new(600.0, 300.0),
             translation: GesturePoint::new(100.0, 50.0),
             velocity: GesturePoint::new(0.0, 0.0),
+            button: PointerButton::Primary,
         });
         assert_eq!(
             controller.settled_region.snapshot(),
