@@ -1398,9 +1398,54 @@ fn build_raster_renderer(device: &wgpu::Device) -> vello::Renderer {
                     .expect("GPU Map raster worker count must be non-zero"),
             ),
             pipeline_cache: None,
+            // Tiles render at their own size: `None` sizes the bump buffers
+            // per render target.
+            buffer_sizes: None,
         },
     )
     .expect("failed to create a parallel GPU Map Vello renderer")
+}
+
+/// Drains the deferred bump-buffer feedback of a tile render before the tile
+/// is bound for sampling: an overflowed render is re-rendered with grown
+/// buffers rather than cached truncated. The raster worker owns the wait; the
+/// frame thread is never blocked on it.
+///
+/// Growth is one-shot by construction: `satisfy` sizes every bump-managed
+/// buffer to at least the demand this scene reported, so re-rendering the
+/// identical scene once converges. The second verify exists to surface a
+/// satisfy/covers disagreement with the shader accounting — not to converge:
+/// it is not a retry loop.
+fn verify_raster_render(
+    renderer: &mut vello::Renderer,
+    resources: &RasterResources,
+    scene: &vello::Scene,
+    view: &wgpu::TextureView,
+    params: &vello::RenderParams,
+    mut readback: Option<vello::BumpReadback>,
+) {
+    if let Some(ticket) = readback {
+        let overflowed = renderer
+            .verify_bump_readbacks(&resources.device, vec![ticket])
+            .expect("GPU Map cached Vello tile verification failed");
+        if !overflowed.is_empty() {
+            readback = renderer
+                .render_to_texture(&resources.device, &resources.queue, scene, view, params)
+                .expect("GPU Map cached Vello tile render failed");
+            if let Some(ticket) = readback {
+                let overflowed = renderer
+                    .verify_bump_readbacks(&resources.device, vec![ticket])
+                    .expect("GPU Map cached Vello tile verification failed");
+                if !overflowed.is_empty() {
+                    tracing::error!(
+                        "GPU Map vello bump buffers still overflowing after a \
+                         demand-sized re-render — satisfy/covers disagree with \
+                         the shader accounting"
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn raster_annotations(annotations: &[RasterAnnotation]) -> Vec<Annotation> {
@@ -1463,20 +1508,16 @@ fn rasterize_tile(
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer
-        .render_to_texture(
-            &resources.device,
-            &resources.queue,
-            &scene,
-            &view,
-            &vello::RenderParams {
-                base_color: Color::new(MAP_BACKGROUND),
-                width: texture_width,
-                height: texture_height,
-                antialiasing_method: vello::AaConfig::Area,
-            },
-        )
+    let params = vello::RenderParams {
+        base_color: Color::new(MAP_BACKGROUND),
+        width: texture_width,
+        height: texture_height,
+        antialiasing_method: vello::AaConfig::Area,
+    };
+    let readback = renderer
+        .render_to_texture(&resources.device, &resources.queue, &scene, &view, &params)
         .expect("GPU Map cached Vello tile render failed");
+    verify_raster_render(&mut renderer, resources, &scene, &view, &params, readback);
 
     let uniform_size = u64::try_from(core::mem::size_of::<[f32; 12]>())
         .expect("GPU Map camera uniform size must fit u64");
