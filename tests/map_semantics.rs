@@ -3,6 +3,14 @@
 //! Received from `components/data/map/tests/e2e_semantics.rs` in
 //! water-rs/waterui, where it lived as a `waterui-map` dev-dependency on this
 //! crate; here it exercises `waterui-map-gpu` directly.
+//!
+//! Gated behind the `host-e2e` feature: it mounts through `waterui-testing`,
+//! which pulls `hydrolysis`, and no hydrolysis revision compiles against the
+//! pinned waterui revision yet — it still implements the retired `Scene2D`
+//! contract. Enabling the feature today fails this target with unresolved
+//! imports, by design: the dev-deps named in `Cargo.toml` go in once a
+//! hydrolysis revision compiles against the new API.
+#![cfg(feature = "host-e2e")]
 
 use std::time::Duration;
 
