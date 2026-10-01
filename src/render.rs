@@ -2088,13 +2088,11 @@ impl MapPainter {
             matched_features,
             path_elements = fill_batches
                 .values()
-                .flat_map(|batch| batch.paths.iter())
-                .map(|(_, path)| path.elements().len())
+                .map(|batch| batch.path.elements().len())
                 .sum::<usize>()
                 + line_batches
                     .values()
-                    .flat_map(|batch| batch.paths.iter())
-                    .map(|(_, path)| path.elements().len())
+                    .map(|batch| batch.path.elements().len())
                     .sum::<usize>(),
             "encoded GPU map style layer"
         );
@@ -2627,8 +2625,7 @@ fn geometry_points(geometry: &Geometry<f32>) -> Vec<Coord<f32>> {
 #[derive(Debug)]
 struct FillBatch {
     color: Color,
-    /// One merged path per tile, in collection order.
-    paths: Vec<(TileId, BezPath)>,
+    path: BezPath,
 }
 
 /// One `(color, width)` pair's collected stroke geometries for a style layer.
@@ -2636,70 +2633,28 @@ struct FillBatch {
 struct LineBatch {
     color: Color,
     width: f64,
-    /// One merged path per tile, in collection order.
-    paths: Vec<(TileId, BezPath)>,
+    path: BezPath,
 }
 
-/// Appends `path` to the batch's last tile entry, or opens a new one: features
-/// arrive grouped by tile, so this merges all of a tile's same-colour
-/// geometries into one path.
-fn push_tile_path(paths: &mut Vec<(TileId, BezPath)>, tile: TileId, path: BezPath) {
-    match paths.last_mut() {
-        Some((last_tile, last_path)) if *last_tile == tile => {
-            last_path.extend(path.elements().iter().copied());
-        }
-        _ => paths.push((tile, path)),
-    }
-}
-
-/// Concatenates per-tile `paths` into one path: each tile's geometry was
-/// already a set of self-contained subpaths, so the merge is purely
-/// administrative.
-fn merge_paths(paths: &[(TileId, BezPath)]) -> BezPath {
-    let mut merged = BezPath::new();
-    for (_, path) in paths {
-        merged.extend(path.elements().iter().copied());
-    }
-    merged
-}
-
-/// Emits a fill batch. Opaque colours go out one path per tile: merged and
-/// split draws cover the same winding region, and the engine rasterizes a
-/// path once per recorded op, so a city-scale merged path would be one
-/// quadratic rasterize while per-tile paths stay small. Translucent colours
-/// stay fully merged — a single draw composites the alpha once over every
-/// overlap, which split ops would darken.
+/// Emits a fill batch as a single draw: merging the whole layer's
+/// same-colour geometry into one path covers the same winding region split
+/// ops would, and one draw composites a translucent colour's alpha once over
+/// every overlap, which split ops would darken.
 fn emit_fill_batch(scene: &mut impl ReplayDraw, batch: &FillBatch) {
-    if batch.color.components()[3] >= 1.0 {
-        for (_, path) in &batch.paths {
-            scene.fill(Fixed(ShapeData::of(path)), Fixed(Paint::from(batch.color)));
-        }
-    } else {
-        scene.fill(
-            Fixed(ShapeData::of(&merge_paths(&batch.paths))),
-            Fixed(Paint::from(batch.color)),
-        );
-    }
+    scene.fill(
+        Fixed(ShapeData::of(&batch.path)),
+        Fixed(Paint::from(batch.color)),
+    );
 }
 
-/// Emits a stroke batch under the same opaque/translucent rule as
+/// Emits a stroke batch under the same whole-layer merge as
 /// [`emit_fill_batch`].
 fn emit_line_batch(scene: &mut impl ReplayDraw, batch: &LineBatch) {
-    if batch.color.components()[3] >= 1.0 {
-        for (_, path) in &batch.paths {
-            scene.stroke(
-                Fixed(ShapeData::of(path)),
-                Fixed(Stroke::new(batch.width)),
-                Fixed(Paint::from(batch.color)),
-            );
-        }
-    } else {
-        scene.stroke(
-            Fixed(ShapeData::of(&merge_paths(&batch.paths))),
-            Fixed(Stroke::new(batch.width)),
-            Fixed(Paint::from(batch.color)),
-        );
-    }
+    scene.stroke(
+        Fixed(ShapeData::of(&batch.path)),
+        Fixed(Stroke::new(batch.width)),
+        Fixed(Paint::from(batch.color)),
+    );
 }
 
 #[allow(
@@ -2737,17 +2692,14 @@ fn collect_fill(
         return;
     };
     let key = ColorKey::new(color);
-    push_tile_path(
-        &mut fills
-            .entry(key)
-            .or_insert_with(|| FillBatch {
-                color,
-                paths: Vec::new(),
-            })
-            .paths,
-        tile,
-        path,
-    );
+    fills
+        .entry(key)
+        .or_insert_with(|| FillBatch {
+            color,
+            path: BezPath::new(),
+        })
+        .path
+        .extend(path.elements().iter().copied());
     if let Some(outline) = property_color(layer, "fill-outline-color", context)
         && let Some(path) = fill_outline_path(camera, tile, extent, geometry)
     {
@@ -2755,18 +2707,15 @@ fn collect_fill(
             color: ColorKey::new(outline),
             width: 1.0_f64.to_bits(),
         };
-        push_tile_path(
-            &mut lines
-                .entry(key)
-                .or_insert_with(|| LineBatch {
-                    color: outline,
-                    width: 1.0,
-                    paths: Vec::new(),
-                })
-                .paths,
-            tile,
-            path,
-        );
+        lines
+            .entry(key)
+            .or_insert_with(|| LineBatch {
+                color: outline,
+                width: 1.0,
+                path: BezPath::new(),
+            })
+            .path
+            .extend(path.elements().iter().copied());
     }
 }
 
@@ -2800,18 +2749,15 @@ fn collect_line(
         color: ColorKey::new(color),
         width: width.to_bits(),
     };
-    push_tile_path(
-        &mut lines
-            .entry(key)
-            .or_insert_with(|| LineBatch {
-                color,
-                width,
-                paths: Vec::new(),
-            })
-            .paths,
-        tile,
-        path,
-    );
+    lines
+        .entry(key)
+        .or_insert_with(|| LineBatch {
+            color,
+            width,
+            path: BezPath::new(),
+        })
+        .path
+        .extend(path.elements().iter().copied());
 }
 
 fn property_value(layer: &StyleLayer, name: &str, context: &EvaluationContext) -> Option<Value> {
