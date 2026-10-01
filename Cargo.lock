@@ -416,7 +416,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 [[package]]
 name = "cherenkov"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
+source = "git+https://github.com/water-rs/cherenkov?rev=cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e#cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e"
 dependencies = [
  "color",
  "filtrate-core",
@@ -434,7 +434,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-cpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
+source = "git+https://github.com/water-rs/cherenkov?rev=cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e#cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e"
 dependencies = [
  "cherenkov",
  "filtrate-core",
@@ -452,7 +452,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-gpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
+source = "git+https://github.com/water-rs/cherenkov?rev=cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e#cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e"
 dependencies = [
  "ash",
  "bytemuck",
@@ -486,7 +486,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-shader"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
+source = "git+https://github.com/water-rs/cherenkov?rev=cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e#cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e"
 dependencies = [
  "naga",
  "thiserror 2.0.21",
@@ -671,7 +671,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -771,7 +771,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -858,7 +858,7 @@ dependencies = [
 [[package]]
 name = "filtrate"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
+source = "git+https://github.com/water-rs/cherenkov?rev=cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e#cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e"
 dependencies = [
  "bytemuck",
  "cherenkov-shader",
@@ -876,12 +876,12 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
+source = "git+https://github.com/water-rs/cherenkov?rev=cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e#cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e"
 
 [[package]]
 name = "filtrate-derive"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
+source = "git+https://github.com/water-rs/cherenkov?rev=cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e#cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3194,7 +3194,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3250,7 +3250,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3504,7 +3504,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3663,7 +3663,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3885,7 +3885,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4456,7 +4456,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -118,12 +118,12 @@ waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "e5801bad2
 waterui-map = { git = "https://github.com/water-rs/waterui", rev = "e5801bad2c29cc2c0ff1ecbe3110e3224ea85029" }
 waterui-url = { git = "https://github.com/water-rs/waterui", rev = "e5801bad2c29cc2c0ff1ecbe3110e3224ea85029" }
 
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "283124ff448120d6ba2e0a8556832bb65e30e86a" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "283124ff448120d6ba2e0a8556832bb65e30e86a" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "283124ff448120d6ba2e0a8556832bb65e30e86a" }
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "283124ff448120d6ba2e0a8556832bb65e30e86a" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "283124ff448120d6ba2e0a8556832bb65e30e86a" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "283124ff448120d6ba2e0a8556832bb65e30e86a" }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "cb2af6432e83edd09aa4e9b2f720eebfeccb6c9e" }
 
 # The nami `kurbo` feature Cherenkov requires is unreleased (water-rs/nami#27);
 # this revision is the one the pinned monorepo declares, and it contains the
