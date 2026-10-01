@@ -33,10 +33,6 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         uses: ./.github/actions/linux-deps
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       # `shaderloom` compiles WGSL to DXIL on Windows through `dxc`
       - name: Install DirectX Shader Compiler
         if: runner.os == 'Windows'
@@ -67,9 +63,6 @@ jobs:
           components: clippy, rustfmt
       - name: Install Linux dependencies
         uses: ./.github/actions/linux-deps
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -104,9 +97,6 @@ jobs:
           toolchain: ${{ steps.msrv.outputs.version }}
       - name: Install Linux dependencies
         uses: ./.github/actions/linux-deps
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - uses: Swatinem/rust-cache@v2
       # Proof in the log that the floor is what compiled, so a later change to
       # the pin or the action cannot quietly make this a second stable run.

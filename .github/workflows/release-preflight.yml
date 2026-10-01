@@ -19,9 +19,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Linux dependencies
         uses: ./.github/actions/linux-deps
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - id: baseline
         run: |
           set -euo pipefail

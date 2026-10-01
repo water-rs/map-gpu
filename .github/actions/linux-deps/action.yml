@@ -8,5 +8,7 @@ runs:
   steps:
     - shell: bash
       run: |
+        # spirv-tools: cherenkov-gpu's build script optimizes its precompiled
+        # SPIR-V with spirv-opt on every non-Apple native target.
         sudo apt-get update
-        sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev libxkbcommon-dev mesa-vulkan-drivers libvulkan1
+        sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev libxkbcommon-dev mesa-vulkan-drivers libvulkan1 spirv-tools
