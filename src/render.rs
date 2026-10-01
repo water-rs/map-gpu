@@ -3258,6 +3258,7 @@ mod tests {
     use kurbo::{PathEl, Point};
     use num_traits::ToPrimitive as _;
     use waterui_graphics::cherenkov_cpu::Raster;
+    use waterui_graphics::cherenkov_gpu::Gpu;
     use waterui_graphics::{OffscreenRenderer, OffscreenSize};
     use waterui_map::{MapInteractivity, MapVisibility};
     use waterui_url::Url;
@@ -3596,12 +3597,10 @@ mod tests {
     /// The frozen base picture replays under a camera transform — the same
     /// path a pan gesture animates — so rendering the prepared map offscreen
     /// exercises the whole port: tile decode, resource registration and the
-    /// Cherenkov engine. The recorded content is backend-agnostic; the export
-    /// uses the CPU backend because the GPU backend's coverage atlas (4096²
-    /// texels, 11,933 cells ≈ 14M texels needed here) cannot hold a
-    /// city-scale scene yet — an engine capacity issue, not a content one.
-    /// The PNG goes to `/tmp/waterui_map_gpu/` for visual comparison against
-    /// the pre-port export.
+    /// Cherenkov engine. The recorded content is backend-agnostic: the GPU
+    /// backend renders the city-scale scene on the real adapter, and the CPU
+    /// backend exports the same recording beside it for visual comparison.
+    /// The PNGs go to `/tmp/waterui_map_gpu/`.
     #[test]
     #[ignore = "requires network access and a real tile provider"]
     fn cached_camera_pipeline_exports_manhattan() {
@@ -3610,25 +3609,32 @@ mod tests {
         let height = 1_200;
         let region = manhattan_region(0.030, 0.050);
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
-            .expect("OpenFreeMap Manhattan scene must load");
-
-        let renderer =
-            OffscreenRenderer::<Raster>::cpu().expect("cached map visual requires an engine");
+        let output_dir = std::path::Path::new("/tmp/waterui_map_gpu");
+        std::fs::create_dir_all(output_dir).expect("cached map output directory must be created");
         let size =
             OffscreenSize::try_from_pixels(width, height).expect("visual size must be non-zero");
-        let output = renderer
-            .render(&mut prepared, size, 1.0)
-            .expect("cached map camera replay must render");
-        let output_path = std::path::Path::new("/tmp/waterui_map_gpu/cached_camera.png");
-        std::fs::create_dir_all(
-            output_path
-                .parent()
-                .expect("cached map output must have a parent"),
-        )
-        .expect("cached map output directory must be created");
-        output
-            .save_png(output_path)
-            .expect("cached map output must be saved");
+
+        // A PreparedMap records its base picture on the first render through
+        // that render's resource table, so each backend needs its own prepared
+        // scene: the CPU export first, then the GPU render.
+        let mut prepared_cpu = pollster::block_on(PreparedMap::load(&options, region, width, height))
+            .expect("OpenFreeMap Manhattan scene must load");
+        let cpu_renderer =
+            OffscreenRenderer::<Raster>::cpu().expect("cached map visual requires an engine");
+        cpu_renderer
+            .render(&mut prepared_cpu, size, 1.0)
+            .expect("cached map camera replay must render on the CPU backend")
+            .save_png(output_dir.join("cached_camera_cpu.png"))
+            .expect("cached map CPU output must be saved");
+
+        let mut prepared_gpu = pollster::block_on(PreparedMap::load(&options, region, width, height))
+            .expect("OpenFreeMap Manhattan scene must load");
+        let gpu_renderer =
+            OffscreenRenderer::<Gpu>::new().expect("cached map visual requires a GPU engine");
+        gpu_renderer
+            .render(&mut prepared_gpu, size, 1.0)
+            .expect("cached map camera replay must render on the GPU backend")
+            .save_png(output_dir.join("cached_camera.png"))
+            .expect("cached map GPU output must be saved");
     }
 }
