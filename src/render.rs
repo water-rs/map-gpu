@@ -29,7 +29,7 @@ use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
 use rayon::prelude::*;
 use waterui_core::animation::Animation;
 use waterui_graphics::{
-    Registered, SceneContent, SceneInvalidator, SceneResources, SceneView, ScrollUnit,
+    RecordingResources, Registered, SceneContent, SceneInvalidator, SceneView, ScrollUnit,
     SurfaceInputEvent,
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
@@ -336,11 +336,15 @@ struct Registrations {
 
 impl Registrations {
     /// The `FontId` for `font`, registering it with `table` on first use.
-    fn font(&mut self, font: &parley::FontData, table: &SceneResources) -> Option<FontId> {
+    fn font(
+        &mut self,
+        font: &parley::FontData,
+        table: &mut RecordingResources<'_>,
+    ) -> Option<FontId> {
         let key = (font.data.id(), font.index);
         if let Some(handle) = self.fonts.get(&key) {
             self.used_fonts.insert(key);
-            return Some(handle.id());
+            return Some(table.name(handle));
         }
         if self.failed_fonts.contains(&key) {
             return None;
@@ -348,7 +352,7 @@ impl Registrations {
         let source = FontSource::bytes(Arc::<[u8]>::from(font.data.data())).with_index(font.index);
         match table.font(source) {
             Ok(handle) => {
-                let id = handle.id();
+                let id = table.name(&handle);
                 self.fonts.insert(key, handle);
                 self.used_fonts.insert(key);
                 Some(id)
@@ -367,12 +371,12 @@ impl Registrations {
         pixels: &Arc<[u8]>,
         width: u32,
         height: u32,
-        table: &SceneResources,
+        table: &mut RecordingResources<'_>,
     ) -> Option<ImageId> {
         let key = (Arc::as_ptr(pixels).cast::<u8>() as usize, width, height);
         if let Some(handle) = self.images.get(&key) {
             self.used_images.insert(key);
-            return Some(handle.id());
+            return Some(table.name(handle));
         }
         if self.failed_images.contains(&key) {
             return None;
@@ -381,7 +385,7 @@ impl Registrations {
             .and_then(|data| table.image(data));
         match data {
             Ok(handle) => {
-                let id = handle.id();
+                let id = table.name(&handle);
                 self.images.insert(key, handle);
                 self.used_images.insert(key);
                 Some(id)
@@ -570,7 +574,7 @@ impl SceneContent for PreparedMap {
     fn build_scene(
         &mut self,
         recorder: &mut Recorder,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
     ) -> bool {
@@ -602,7 +606,7 @@ impl PreparedMap {
     fn append_base_scene_for_camera(
         &mut self,
         scene: &mut impl ReplayDraw,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
         camera: Camera,
     ) {
         if self.base.is_none() {
@@ -620,7 +624,7 @@ impl PreparedMap {
 
     /// Records the base layers into a frozen picture, registering every font
     /// and tile image the recording names.
-    fn build_base(&self, resources: &SceneResources) -> BaseScene {
+    fn build_base(&self, resources: &mut RecordingResources<'_>) -> BaseScene {
         let mut registrations = Registrations::default();
         let picture = Picture::record(|recorded| {
             MapPainter::default().paint_base(
@@ -1298,7 +1302,7 @@ impl SceneContent for MapScene {
     fn build_scene(
         &mut self,
         recorder: &mut Recorder,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
     ) -> bool {
@@ -1523,7 +1527,7 @@ impl MapPainter {
         camera: Camera,
         tiles: &SourceTiles,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         self.paint_base_in_bounds(
             scene,
@@ -1545,7 +1549,7 @@ impl MapPainter {
         tiles: &SourceTiles,
         render_bounds: Rect,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         self.occupied_labels.clear();
         for layer in &style.layers {
@@ -1610,7 +1614,7 @@ impl MapPainter {
         tiles: &SourceTiles,
         render_bounds: Rect,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         let zoom_context = EvaluationContext::new().with_zoom(camera.zoom);
         let opacity = property_number(layer, "heatmap-opacity", &zoom_context).unwrap_or(1.0);
@@ -1693,7 +1697,7 @@ impl MapPainter {
         camera: Camera,
         tiles: &SourceTiles,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         let context = EvaluationContext::new().with_zoom(camera.zoom);
         let opacity = property_number(layer, "raster-opacity", &context).unwrap_or(1.0);
@@ -1759,7 +1763,7 @@ impl MapPainter {
         camera: Camera,
         tiles: &SourceTiles,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         let context = EvaluationContext::new().with_zoom(camera.zoom);
         let exaggeration =
@@ -1856,7 +1860,7 @@ impl MapPainter {
         location: Option<&Location>,
         chrome: MapChrome,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         self.occupied_labels.clear();
         self.paint_annotations(scene, camera, annotations, registrations, resources);
@@ -1918,7 +1922,7 @@ impl MapPainter {
         scene: &mut impl ReplayDraw,
         camera: Camera,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         let latitude = camera.region.center.latitude.get();
         let Some((meters, width)) = scale_bar_span(camera, latitude) else {
@@ -1969,7 +1973,7 @@ impl MapPainter {
         tiles: &SourceTiles,
         render_bounds: Rect,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         let source_name = layer
             .source
@@ -2108,7 +2112,7 @@ impl MapPainter {
         feature: &TileFeature,
         render_bounds: Rect,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         let Some(text) = property_string(layer, "text-field", context) else {
             return;
@@ -2171,7 +2175,7 @@ impl MapPainter {
         halo_color: Color,
         halo_width: f64,
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         let mut builder = self
             .layouts
@@ -2249,7 +2253,7 @@ impl MapPainter {
         camera: Camera,
         annotations: &[Annotation],
         registrations: &mut Registrations,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
     ) {
         for annotation in annotations {
             let (x, y) = camera.coordinate_point(annotation.coordinate);

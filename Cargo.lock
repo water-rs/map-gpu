@@ -416,7 +416,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 [[package]]
 name = "cherenkov"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
+source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
 dependencies = [
  "color",
  "filtrate-core",
@@ -434,7 +434,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-cpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
+source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
 dependencies = [
  "cherenkov",
  "filtrate-core",
@@ -452,8 +452,9 @@ dependencies = [
 [[package]]
 name = "cherenkov-gpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
+source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
 dependencies = [
+ "ash",
  "bytemuck",
  "cherenkov",
  "filtrate",
@@ -462,9 +463,13 @@ dependencies = [
  "futures-util",
  "gloo-timers 0.3.0",
  "half",
+ "js-sys",
  "kurbo",
+ "libc",
  "libm",
  "naga",
+ "ndk",
+ "ndk-sys",
  "objc2",
  "objc2-io-surface",
  "objc2-metal",
@@ -474,13 +479,14 @@ dependencies = [
  "skrifa",
  "thiserror 2.0.21",
  "tracing",
+ "wasm-bindgen",
  "wgpu",
 ]
 
 [[package]]
 name = "cherenkov-shader"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
+source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
 dependencies = [
  "naga",
  "thiserror 2.0.21",
@@ -852,7 +858,7 @@ dependencies = [
 [[package]]
 name = "filtrate"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
+source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
 dependencies = [
  "bytemuck",
  "cherenkov-shader",
@@ -870,12 +876,12 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
+source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
 
 [[package]]
 name = "filtrate-derive"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
+source = "git+https://github.com/water-rs/cherenkov?rev=283124ff448120d6ba2e0a8556832bb65e30e86a#283124ff448120d6ba2e0a8556832bb65e30e86a"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -4043,7 +4049,7 @@ dependencies = [
 [[package]]
 name = "waterkit-build"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
+source = "git+https://github.com/water-rs/waterkit?rev=f48ab29c10e0c7214aa6850c024eab2b4cbb43ae#f48ab29c10e0c7214aa6850c024eab2b4cbb43ae"
 dependencies = [
  "jni 0.22.4",
  "ndk-context",
@@ -4054,7 +4060,7 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
+source = "git+https://github.com/water-rs/waterkit?rev=f48ab29c10e0c7214aa6850c024eab2b4cbb43ae#f48ab29c10e0c7214aa6850c024eab2b4cbb43ae"
 dependencies = [
  "executor-core",
  "jiff",
@@ -4066,7 +4072,7 @@ dependencies = [
 [[package]]
 name = "waterkit-location"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
+source = "git+https://github.com/water-rs/waterkit?rev=f48ab29c10e0c7214aa6850c024eab2b4cbb43ae#f48ab29c10e0c7214aa6850c024eab2b4cbb43ae"
 dependencies = [
  "async-channel",
  "async-io",
@@ -4088,7 +4094,7 @@ dependencies = [
 [[package]]
 name = "waterkit-permission"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
+source = "git+https://github.com/water-rs/waterkit?rev=f48ab29c10e0c7214aa6850c024eab2b4cbb43ae#f48ab29c10e0c7214aa6850c024eab2b4cbb43ae"
 dependencies = [
  "async-channel",
  "futures",
@@ -4108,7 +4114,7 @@ dependencies = [
 [[package]]
 name = "waterui-core"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?rev=163fbb37b8304ac6a025493add2c4692feabd97f#163fbb37b8304ac6a025493add2c4692feabd97f"
+source = "git+https://github.com/water-rs/waterui?rev=e5801bad2c29cc2c0ff1ecbe3110e3224ea85029#e5801bad2c29cc2c0ff1ecbe3110e3224ea85029"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -4123,7 +4129,7 @@ dependencies = [
 [[package]]
 name = "waterui-graphics"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?rev=163fbb37b8304ac6a025493add2c4692feabd97f#163fbb37b8304ac6a025493add2c4692feabd97f"
+source = "git+https://github.com/water-rs/waterui?rev=e5801bad2c29cc2c0ff1ecbe3110e3224ea85029#e5801bad2c29cc2c0ff1ecbe3110e3224ea85029"
 dependencies = [
  "arc-swap",
  "bytemuck",
@@ -4137,7 +4143,9 @@ dependencies = [
  "mp4parse",
  "nami",
  "pastey",
+ "pollster 1.0.1",
  "thiserror 2.0.21",
+ "tracing",
  "waterui-core",
  "wgpu",
 ]
@@ -4145,7 +4153,7 @@ dependencies = [
 [[package]]
 name = "waterui-macros"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?rev=163fbb37b8304ac6a025493add2c4692feabd97f#163fbb37b8304ac6a025493add2c4692feabd97f"
+source = "git+https://github.com/water-rs/waterui?rev=e5801bad2c29cc2c0ff1ecbe3110e3224ea85029#e5801bad2c29cc2c0ff1ecbe3110e3224ea85029"
 dependencies = [
  "icu_locale_core",
  "proc-macro-crate",
@@ -4158,7 +4166,7 @@ dependencies = [
 [[package]]
 name = "waterui-map"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?rev=163fbb37b8304ac6a025493add2c4692feabd97f#163fbb37b8304ac6a025493add2c4692feabd97f"
+source = "git+https://github.com/water-rs/waterui?rev=e5801bad2c29cc2c0ff1ecbe3110e3224ea85029#e5801bad2c29cc2c0ff1ecbe3110e3224ea85029"
 dependencies = [
  "nami",
  "suiteki",
@@ -4205,7 +4213,7 @@ dependencies = [
 [[package]]
 name = "waterui-url"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?rev=163fbb37b8304ac6a025493add2c4692feabd97f#163fbb37b8304ac6a025493add2c4692feabd97f"
+source = "git+https://github.com/water-rs/waterui?rev=e5801bad2c29cc2c0ff1ecbe3110e3224ea85029#e5801bad2c29cc2c0ff1ecbe3110e3224ea85029"
 dependencies = [
  "base64 0.23.1",
  "nami-core",
