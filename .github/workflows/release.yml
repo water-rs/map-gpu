@@ -52,6 +52,9 @@ jobs:
       # configured per crate on crates.io).
       - uses: rust-lang/crates-io-auth-action@v1
         id: crates-io-auth
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - run: >-
           release-plz release
           --git-token "${GITHUB_TOKEN}"
@@ -89,6 +92,9 @@ jobs:
       - uses: release-plz/git-config@v0.1.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - run: >-
           release-plz release-pr
           --git-token "${GITHUB_TOKEN}"
