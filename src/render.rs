@@ -3617,22 +3617,22 @@ mod tests {
         // A PreparedMap records its base picture on the first render through
         // that render's resource table, so each backend needs its own prepared
         // scene: the CPU export first, then the GPU render.
-        let mut prepared_cpu = pollster::block_on(PreparedMap::load(&options, region, width, height))
+        let mut prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
             .expect("OpenFreeMap Manhattan scene must load");
         let cpu_renderer =
             OffscreenRenderer::<Raster>::cpu().expect("cached map visual requires an engine");
         cpu_renderer
-            .render(&mut prepared_cpu, size, 1.0)
+            .render(&mut prepared, size, 1.0)
             .expect("cached map camera replay must render on the CPU backend")
             .save_png(output_dir.join("cached_camera_cpu.png"))
             .expect("cached map CPU output must be saved");
 
-        let mut prepared_gpu = pollster::block_on(PreparedMap::load(&options, region, width, height))
+        let mut prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
             .expect("OpenFreeMap Manhattan scene must load");
         let gpu_renderer =
             OffscreenRenderer::<Gpu>::new().expect("cached map visual requires a GPU engine");
         gpu_renderer
-            .render(&mut prepared_gpu, size, 1.0)
+            .render(&mut prepared, size, 1.0)
             .expect("cached map camera replay must render on the GPU backend")
             .save_png(output_dir.join("cached_camera.png"))
             .expect("cached map GPU output must be saved");
