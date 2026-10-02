@@ -30,14 +30,14 @@ pub struct VectorTile {
 
 /// A decoded `raster` tile held as RGBA8.
 ///
-/// The pixels live behind `Arc<Vec<u8>>` rather than `Arc<[u8]>` so they can be
-/// handed to `peniko::Blob` without another copy per frame.
+/// The pixels live behind `Arc` so registering the tile with the engine is a
+/// handle clone, never a copy.
 #[derive(Debug, Clone)]
 pub struct RasterTile {
     pub id: TileId,
     pub width: u32,
     pub height: u32,
-    pub pixels: Arc<Vec<u8>>,
+    pub pixels: Arc<[u8]>,
     pub byte_len: usize,
 }
 
@@ -51,7 +51,7 @@ impl RasterTile {
             width,
             height,
             byte_len: pixels.len(),
-            pixels: Arc::new(pixels),
+            pixels: pixels.into(),
         })
     }
 }
