@@ -596,6 +596,15 @@ impl SceneContent for PreparedMap {
         self.registrations.end_frame();
         false
     }
+
+    // The frozen base `Picture` and every `Registered` handle in
+    // `registrations` belong to the engine that recorded them; the next
+    // `build_scene` re-records `build_base` and re-registers what it names.
+    // Style, camera, tiles, annotations and the painter are source and stay.
+    fn rebuild_for_engine(&mut self) {
+        self.base = None;
+        self.registrations = Registrations::default();
+    }
 }
 
 impl PreparedMap {
@@ -1323,6 +1332,25 @@ impl SceneContent for MapScene {
         }
         self.registrations.end_frame();
         frame.animating
+    }
+
+    // The invalidator in the shared cell and the overlay `Registered`
+    // handles belong to the old engine; the prepared maps carry their own
+    // engine-bound base pictures and registrations. The watches armed on
+    // the signals read the cell, so they keep working — the replacement
+    // engine's `set_invalidator` repopulates it, and the next
+    // `build_scene` re-registers and re-records what it draws. Region,
+    // style, tiles, camera and gesture state are source and stay.
+    fn rebuild_for_engine(&mut self) {
+        *self.invalidator.borrow_mut() = None;
+        self.registrations = Registrations::default();
+        let mut state = self.state.borrow_mut();
+        if let Some(prepared) = state.prepared.as_mut() {
+            prepared.rebuild_for_engine();
+        }
+        if let Some((_, prepared)) = state.pending_prepared.as_mut() {
+            prepared.rebuild_for_engine();
+        }
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
