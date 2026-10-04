@@ -94,56 +94,58 @@ internet = { reason = "downloads map styles and vector tiles" }
 ignored = ["getrandom"]
 
 # Registry dependencies do not carry their own patch table, so the framework's
-# pins are repeated here for this graph to resolve the same sources as the
-# Cherenkov cutover branches: every `waterui-*` crate this crate reaches,
-# directly or transitively, is the same monorepo commit, and the engine trio
-# is the Cherenkov revision the port targets.
+# pins are repeated here for this graph to resolve the same sources as
+# water-rs/waterui at `4dacae48`: every `waterui-*` crate this crate reaches,
+# directly or transitively, is the same monorepo commit. Cherenkov, filtrate
+# and hydrolysis live in that repository — the engine family under
+# `graphics/` and the backend under `backends/hydrolysis` — so their
+# requirements resolve there too (water-rs/waterui#1449).
 [patch.crates-io]
-# water-rs/waterui at the scene recovery contract revision
-# (water-rs/waterui#1411): `SceneContent` requires `rebuild_for_engine`.
-waterui = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-core = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-form = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-map = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-media = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-testing = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-text = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-url = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-video = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
-waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "ada952c7c0a65408db9b2cf67442bff7ae16aeb7" }
+# water-rs/waterui at the in-tree Cherenkov revision: `SceneContent`
+# requires `rebuild_for_engine`, the contract this branch implements.
+waterui = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-core = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-form = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-map = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-media = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-testing = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-text = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-url = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-video = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
 
-# Split components and platform hosts at the revisions the cutover branches
-# are built on.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "ecf84009952be5ed630f05115e12096d78416490" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "149fcea688d90ffa8edd1b66e64796dc1b7c3f38" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "bdc07b2488cef4823ed7995dd56384b2383d7348" }
+# Split components at the revisions the pinned waterui workspace consumes.
+# `hydrolysis` enters this graph only through `waterui-testing`, whose
+# workspace dependency already resolves it in-tree at the same revision.
+waterui-image = { git = "https://github.com/water-rs/image", rev = "87080fc2e06628eb990af9fdbfbc3b8a28af5acc" }
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "50a87217658e9cf40024bf50619c4d7555a6415b" }
 
-# The engine and its filter crates — the whole cutover is built on
-# cherenkov `dev` 52236561, which the pinned monorepo also declares.
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+# The engine and its filter crates live in the waterui repository under
+# `graphics/` and resolve to the same revision as the rest of the graph.
+cherenkov = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+cherenkov-cpu = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+cherenkov-gpu = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+filtrate = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+filtrate-core = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
+filtrate-derive = { git = "https://github.com/water-rs/waterui", rev = "4dacae48908d6ad820d57a1ae25794231f77e74b" }
 
 # The nami `kurbo` feature Cherenkov requires is unreleased (water-rs/nami#27);
 # this revision is the one the pinned monorepo declares, and it contains the
@@ -168,7 +170,8 @@ waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "925
 
 
 
-# Mirrored from water-rs/cherenkov's workspace [patch.crates-io] (cherenkov#229).
+# Mirrored from water-rs/waterui's workspace [patch.crates-io] (itself
+# mirrored from the cherenkov workspace's table, water-rs/cherenkov#229).
 # wgpu 30.0.1's Metal backend reads the address of the kCGColorSpace* globals
 # instead of their value and crashes in CGColorSpaceCreateWithName whenever a
 # surface negotiates Extended Display P3 or BT.2100 (gfx-rs/wgpu#10175, fixed on
@@ -185,3 +188,4 @@ wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu
 wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+
