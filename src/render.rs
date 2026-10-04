@@ -12,10 +12,6 @@ use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
-use cherenkov::{
-    Draw, Fixed, Font, FontId, FontSource, Glyph, GlyphRun, GlyphStyle, Group, Image, ImageData,
-    ImageId, Paint, Picture, Recorder, Rgba8, Sampling, ShapeData, Srgb,
-};
 use executor_core::spawn_local;
 use futures::{StreamExt as _, future::join_all, stream};
 use geo::{BoundingRect as _, Simplify as _};
@@ -28,9 +24,13 @@ use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use waterui_core::animation::Animation;
+use waterui_graphics::draw::{
+    self, Draw, Fixed, FontId, Glyph, GlyphRun, GlyphStyle, Group, ImageId, Paint, Picture,
+    Recorder, Sampling, ShapeData, Srgb,
+};
 use waterui_graphics::{
-    RecordingResources, Registered, SceneContent, SceneInvalidator, SceneView, ScrollUnit,
-    SurfaceInputEvent,
+    FontSource, ImageData, RecordingResources, Registered, Rgba8, SceneContent, SceneInvalidator,
+    SceneView, ScrollUnit, SurfaceInputEvent,
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
 
@@ -84,7 +84,7 @@ enum LoadedTiles {
 
 const MAP_BACKGROUND: [f32; 4] = [0.973, 0.957, 0.941, 1.0];
 /// A colour in sRGB: the space every `MapLibre` style property is authored in.
-type Color = cherenkov::Color<Srgb>;
+type Color = draw::Color<Srgb>;
 /// Inset of the map's own chrome (compass, scale bar) from the viewport edge.
 const CHROME_INSET: f64 = 12.0;
 const COMPASS_RADIUS: f64 = 17.0;
@@ -279,8 +279,8 @@ impl TileCache {
 /// A `Draw` target that accepts [`Fixed`] values for every operand the map
 /// painter emits.
 ///
-/// [`StaticRecorder`][cherenkov::StaticRecorder] (the frozen base picture)
-/// and [`Recorder`][cherenkov::Recorder] (live frames) both satisfy these
+/// [`StaticRecorder`][draw::StaticRecorder] (the frozen base picture)
+/// and [`Recorder`][draw::Recorder] (live frames) both satisfy these
 /// `From`s — `Fixed` is the `StaticRecorder`'s operand type itself and
 /// converts into the `Recorder`'s `Live` signal — so one painter records
 /// into either target.
@@ -326,8 +326,8 @@ type ImageKey = (usize, u32, u32);
 /// overlay set calls [`Registrations::end_frame`] after each recording.
 #[derive(Debug, Default)]
 struct Registrations {
-    fonts: HashMap<FontKey, Registered<Font>>,
-    images: HashMap<ImageKey, Registered<Image<Rgba8>>>,
+    fonts: HashMap<FontKey, Registered<FontId>>,
+    images: HashMap<ImageKey, Registered<ImageId>>,
     used_fonts: HashSet<FontKey>,
     used_images: HashSet<ImageKey>,
     failed_fonts: HashSet<FontKey>,
