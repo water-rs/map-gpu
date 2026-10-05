@@ -47,7 +47,7 @@ kurbo = "0.13"
 lru = "0.16"
 maplibre-expr = "0.3.2"
 mvt-reader = "2.4.0"
-nami = "=0.11.1"
+nami = "0.12"
 native-executor = "0.8.0"
 parley = { version = "0.11", default-features = false, features = ["system"] }
 rayon = "1.12"
