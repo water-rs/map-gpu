@@ -17,6 +17,7 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write
+  actions: write
 
 jobs:
   release:
@@ -89,11 +90,26 @@ jobs:
       - uses: release-plz/git-config@v0.1.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: >-
-          release-plz release-pr
-          --git-token "${GITHUB_TOKEN}"
-          --repo-url "https://github.com/${GITHUB_REPOSITORY}"
-          --forge github
+      # `-o json` prints the release pull request release-plz created or
+      # updated, if any, on stdout and leaves the progress log on stderr.
+      - id: release-plz
+        run: |
+          report=$(release-plz release-pr \
+            --git-token "${GITHUB_TOKEN}" \
+            --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
+            --forge github \
+            -o json)
+          echo "${report}"
+          pr=$(jq -c '.prs[0] // empty' <<< "${report}")
+          echo "pr=${pr}" >> "${GITHUB_OUTPUT}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The workflow token's pull request triggers no workflow, so its
+      # required gate is dispatched on the release branch here.
+      - name: Pass the release pull request's gate
+        if: steps.release-plz.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ fromJSON(steps.release-plz.outputs.pr).head_branch }}
+        run: gh workflow run pr-base-gate.yml --repo "${GITHUB_REPOSITORY}" --ref "${HEAD_BRANCH}"
