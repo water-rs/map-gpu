@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::future::join_all;
 use maplibre_expr::{Expr, Type, parse, typecheck};
@@ -158,10 +159,19 @@ impl StyleLayer {
     }
 }
 
+/// Monotonic identifier of one loaded style. Tile pictures are keyed by it,
+/// so a style reload never replays content recorded under another style.
 #[derive(Debug, Clone)]
 pub struct MapStyle {
     pub sources: BTreeMap<String, TileSource>,
     pub layers: Vec<StyleLayer>,
+    pub revision: u64,
+}
+
+static NEXT_STYLE_REVISION: AtomicU64 = AtomicU64::new(1);
+
+fn next_style_revision() -> u64 {
+    NEXT_STYLE_REVISION.fetch_add(1, Ordering::Relaxed)
 }
 
 impl MapStyle {
@@ -219,7 +229,11 @@ impl MapStyle {
                 .collect::<Result<Vec<_>, _>>()
         });
         let (sources, layers) = futures::try_join!(sources, layers)?;
-        let style = Self { sources, layers };
+        let style = Self {
+            sources,
+            layers,
+            revision: next_style_revision(),
+        };
         style.validate_layer_sources()?;
         Ok(style)
     }
@@ -532,6 +546,7 @@ mod tests {
         let style = MapStyle {
             sources: BTreeMap::from([(String::from("basemap"), source(SourceKind::Vector))]),
             layers: vec![layer("satellite", LayerKind::Raster, Some("basemap"))],
+            revision: 0,
         };
 
         let error = style
@@ -549,6 +564,7 @@ mod tests {
         let style = MapStyle {
             sources: BTreeMap::new(),
             layers: vec![layer("roads", LayerKind::Line, Some("missing"))],
+            revision: 0,
         };
 
         assert!(style.validate_layer_sources().is_err());
@@ -562,6 +578,7 @@ mod tests {
                 layer("bg", LayerKind::Background, None),
                 layer("sky", LayerKind::Sky, None),
             ],
+            revision: 0,
         };
 
         assert!(style.validate_layer_sources().is_ok());

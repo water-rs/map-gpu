@@ -14,9 +14,9 @@ use web_time::Instant;
 
 use executor_core::spawn_local;
 use futures::{StreamExt as _, future::join_all, stream};
-use geo::{BoundingRect as _, Simplify as _};
-use geo_types::{Coord, Geometry, LineString, Polygon};
-use kurbo::{Affine, BezPath, Circle, Point, Rect, Shape as _, Stroke};
+use geo::{BooleanOps as _, BoundingRect as _, Simplify as _};
+use geo_types::{Coord, Geometry, LineString, MultiLineString, MultiPolygon, Polygon};
+use kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, Shape as _, Stroke};
 use lru::LruCache;
 use maplibre_expr::{EvaluationContext, Value, evaluate};
 use nami::{Binding, Computed, Signal as _, binding, watcher::BoxWatcherGuard};
@@ -36,7 +36,7 @@ use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVis
 
 use crate::{
     MapGestureController, MapGpuOptions, MapLoadError, network,
-    projection::{Camera, TILE_OVERSCAN_PIXELS, TileId, Viewport},
+    projection::{Camera, TILE_OVERSCAN_PIXELS, TILE_SIZE, TileId, Viewport},
     style::{LayerKind, MapStyle, SourceKind, StyleLayer, TileSource},
     tile::{DemTile, RasterTile, TileFeature, VectorTile},
     unblock,
@@ -209,20 +209,25 @@ impl<T: CachedTile> TileMap<T> {
         self.tiles.get(&(source.to_owned(), id)).cloned()
     }
 
-    fn insert(&mut self, source: String, tile: &Arc<T>) {
+    /// Returns the `(source, tile)` key a replaced entry used to occupy, so
+    /// the cache can release pictures recorded from the old payload.
+    fn insert(&mut self, source: String, tile: &Arc<T>) -> Option<(String, TileId)> {
         let key = (source, tile.id());
-        if let Some(replaced) = self.tiles.put(key, Arc::clone(tile)) {
+        let replaced = self.tiles.put(key.clone(), Arc::clone(tile));
+        if let Some(replaced) = &replaced {
             self.bytes = self.bytes.saturating_sub(tile_bytes(replaced.byte_len()));
         }
         self.bytes = self.bytes.saturating_add(tile_bytes(tile.byte_len()));
+        replaced.map(|_| key)
     }
 
-    /// Drops the least recently used tile, returning the bytes it freed.
-    fn evict_lru(&mut self) -> Option<u64> {
-        let (_, evicted) = self.tiles.pop_lru()?;
+    /// Drops the least recently used tile, returning the bytes it freed and
+    /// the key it held, so dependent pictures can be released with it.
+    fn evict_lru(&mut self) -> Option<(u64, (String, TileId))> {
+        let (key, evicted) = self.tiles.pop_lru()?;
         let freed = tile_bytes(evicted.byte_len());
         self.bytes = self.bytes.saturating_sub(freed);
-        Some(freed)
+        Some((freed, key))
     }
 }
 
@@ -230,11 +235,122 @@ fn tile_bytes(byte_len: usize) -> u64 {
     u64::try_from(byte_len).unwrap_or(u64::MAX)
 }
 
+/// Identifies a tile picture: the style revision pins it so a style change
+/// never replays content recorded under another layer set.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TilePictureKey {
+    revision: u64,
+    source: String,
+    tile: TileId,
+    layer: usize,
+}
+
+/// One style layer of one vector tile, recorded in the tile's
+/// `TILE_SIZE`-square local space.
+///
+/// `max_path_elements` is the largest single batched path in the picture —
+/// the number the per-tile batching bound is checked against.
+struct TilePicture {
+    picture: Picture,
+    byte_len: u64,
+    max_path_elements: usize,
+}
+
+impl std::fmt::Debug for TilePicture {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TilePicture")
+            .field("byte_len", &self.byte_len)
+            .field("max_path_elements", &self.max_path_elements)
+            .finish_non_exhaustive()
+    }
+}
+
+/// LRU map of recorded tile pictures, byte-accounted against the same budget
+/// as the decoded tiles they were drawn from.
+///
+/// `by_tile` reverses the key order so a decoded tile's eviction releases
+/// every picture recorded from it; `recordings` counts [`Picture::record`]
+/// calls so a test can prove a repaint or pan records only missing tiles.
+#[derive(Debug)]
+struct PictureMap {
+    pictures: LruCache<TilePictureKey, TilePicture>,
+    by_tile: HashMap<(String, TileId), Vec<TilePictureKey>>,
+    bytes: u64,
+    recordings: u64,
+}
+
+impl PictureMap {
+    fn new() -> Self {
+        Self {
+            pictures: LruCache::unbounded(),
+            by_tile: HashMap::new(),
+            bytes: 0,
+            recordings: 0,
+        }
+    }
+
+    /// The picture for `key`, recording it through `record` on a miss.
+    fn get_or_record(
+        &mut self,
+        key: &TilePictureKey,
+        record: impl FnOnce() -> TilePicture,
+    ) -> &TilePicture {
+        if !self.pictures.contains(key) {
+            let picture = record();
+            self.recordings = self.recordings.saturating_add(1);
+            self.bytes = self.bytes.saturating_add(picture.byte_len);
+            self.by_tile
+                .entry((key.source.clone(), key.tile))
+                .or_default()
+                .push(key.clone());
+            self.pictures.put(key.clone(), picture);
+        }
+        self.pictures
+            .get(key)
+            .expect("a tile picture the map just recorded is present")
+    }
+
+    /// Drops the least recently used picture, returning the freed bytes.
+    fn evict_lru(&mut self) -> Option<u64> {
+        let (key, evicted) = self.pictures.pop_lru()?;
+        self.bytes = self.bytes.saturating_sub(evicted.byte_len);
+        if let Some(keys) = self.by_tile.get_mut(&(key.source.clone(), key.tile)) {
+            keys.retain(|candidate| *candidate != key);
+            if keys.is_empty() {
+                self.by_tile.remove(&(key.source, key.tile));
+            }
+        }
+        Some(evicted.byte_len)
+    }
+
+    /// Drops every picture recorded from one decoded tile.
+    fn release_tile(&mut self, source: &str, tile: TileId) {
+        let Some(keys) = self.by_tile.remove(&(source.to_owned(), tile)) else {
+            return;
+        };
+        for key in keys {
+            if let Some(picture) = self.pictures.pop(&key) {
+                self.bytes = self.bytes.saturating_sub(picture.byte_len);
+            }
+        }
+    }
+
+    /// Drops every recorded picture. Engine replacement invalidates the
+    /// display lists the recordings belong to, so they re-record lazily.
+    fn clear(&mut self) {
+        self.pictures.clear();
+        self.by_tile.clear();
+        self.bytes = 0;
+    }
+}
+
 #[derive(Debug)]
 struct TileCache {
     vector: TileMap<VectorTile>,
     raster: TileMap<RasterTile>,
     dem: TileMap<DemTile>,
+    pictures: PictureMap,
     maximum_bytes: u64,
 }
 
@@ -244,6 +360,7 @@ impl TileCache {
             vector: TileMap::new(),
             raster: TileMap::new(),
             dem: TileMap::new(),
+            pictures: PictureMap::new(),
             maximum_bytes,
         }
     }
@@ -253,21 +370,37 @@ impl TileCache {
             .bytes
             .saturating_add(self.raster.bytes)
             .saturating_add(self.dem.bytes)
+            .saturating_add(self.pictures.bytes)
     }
 
-    /// Evicts across all three payload caches until the shared budget holds.
+    /// Evicts across the payload caches and the tile pictures until the
+    /// shared budget holds.
     ///
-    /// Each round drops the least recently used tile from the currently
-    /// largest cache, so one payload kind cannot starve the others.
+    /// Each round drops the least recently used entry from the currently
+    /// largest store, so one payload kind cannot starve the others. A vector
+    /// tile leaving the cache releases the pictures recorded from it.
     fn enforce_budget(&mut self) {
         while self.bytes() > self.maximum_bytes {
-            let largest = self.vector.bytes.max(self.raster.bytes).max(self.dem.bytes);
+            let largest = self
+                .vector
+                .bytes
+                .max(self.raster.bytes)
+                .max(self.dem.bytes)
+                .max(self.pictures.bytes);
             let freed = if largest == self.vector.bytes {
-                self.vector.evict_lru()
+                let outcome = self.vector.evict_lru();
+                if let Some((freed, (source, tile))) = outcome {
+                    self.pictures.release_tile(&source, tile);
+                    Some(freed)
+                } else {
+                    None
+                }
             } else if largest == self.raster.bytes {
-                self.raster.evict_lru()
+                self.raster.evict_lru().map(|(freed, _)| freed)
+            } else if largest == self.dem.bytes {
+                self.dem.evict_lru().map(|(freed, _)| freed)
             } else {
-                self.dem.evict_lru()
+                self.pictures.evict_lru()
             };
             if freed.is_none() {
                 break;
@@ -407,33 +540,6 @@ impl Registrations {
     }
 }
 
-/// The frozen display list of a map's base layers plus the engine
-/// registrations it names.
-///
-/// A map is recorded content: the base layers are painted once into a
-/// `Picture` at the prepared camera and replayed each frame under the
-/// transform from that camera to the live one, so pans and pinches animate
-/// at display-list cost instead of re-shaping the world. The registrations
-/// must live as long as the picture can be drawn: dropping one releases the
-/// font or image the recording still names.
-struct BaseScene {
-    picture: Picture,
-    /// Registrations the picture names: fonts for symbol labels and the
-    /// `raster`, `hillshade` and `heatmap` tile images. Held, never read —
-    /// dropping it releases resources the picture still names.
-    #[expect(
-        dead_code,
-        reason = "holding the handles keeps the picture's resources registered"
-    )]
-    registrations: Registrations,
-}
-
-impl std::fmt::Debug for BaseScene {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("BaseScene").finish_non_exhaustive()
-    }
-}
-
 /// A fully loaded map scene ready for scene recording.
 ///
 /// This is an internal loading product: it is produced by the tile loader and
@@ -449,7 +555,9 @@ pub struct PreparedMap {
     painter: MapPainter,
     /// Registrations the per-frame overlay painting names.
     registrations: Registrations,
-    base: Option<BaseScene>,
+    /// The shared decoded-tile cache; its [`PictureMap`] holds the recorded
+    /// tile pictures this map replays, byte-budgeted against decoded tiles.
+    cache: Rc<RefCell<TileCache>>,
 }
 
 impl std::fmt::Debug for PreparedMap {
@@ -460,7 +568,6 @@ impl std::fmt::Debug for PreparedMap {
             .field("tile_count", &self.tiles.tile_count())
             .field("annotation_count", &self.annotations.len())
             .field("has_location", &self.location.is_some())
-            .field("has_base", &self.base.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -560,7 +667,7 @@ impl PreparedMap {
             },
             painter: MapPainter::default(),
             registrations: Registrations::default(),
-            base: None,
+            cache,
         })
     }
 }
@@ -597,76 +704,39 @@ impl SceneContent for PreparedMap {
         false
     }
 
-    // The frozen base `Picture` and every `Registered` handle in
-    // `registrations` belong to the engine that recorded them; the next
-    // `build_scene` re-records `build_base` and re-registers what it names.
-    // Style, camera, tiles, annotations and the painter are source and stay.
+    // Every `Registered` handle in `registrations` and every recorded tile
+    // picture belongs to the engine that minted them; the next `build_scene`
+    // re-records lazily and re-registers what it names. Style, camera,
+    // tiles, annotations and the painter are source and stay.
     fn rebuild_for_engine(&mut self) {
-        self.base = None;
         self.registrations = Registrations::default();
+        self.cache.borrow_mut().pictures.clear();
     }
 }
 
 impl PreparedMap {
-    /// Replays the base picture under `camera`, recording it on first use.
+    /// Paints the base layers under `camera`.
     ///
-    /// The picture names fonts and tile images through `base.registrations`,
-    /// held for as long as the picture can be replayed.
+    /// Vector tile content replays from the shared tile-picture cache — one
+    /// [`Picture`] per (source tile, style layer) recorded in tile-local
+    /// space and transformed by [`Camera::tile_transform`] — while the
+    /// viewport-bound layers (symbol labels, heatmap) paint live.
     fn append_base_scene_for_camera(
         &mut self,
         scene: &mut impl ReplayDraw,
         resources: &mut RecordingResources<'_>,
         camera: Camera,
     ) {
-        if self.base.is_none() {
-            self.base = Some(self.build_base(resources));
-        }
-        let base = self
-            .base
-            .as_ref()
-            .expect("the base scene was just recorded");
-        scene.picture(
-            &base.picture,
-            Fixed(camera_transform(self.camera, camera).unwrap_or(Affine::IDENTITY)),
+        self.painter.paint_base(
+            scene,
+            &self.style,
+            camera,
+            &self.tiles,
+            &mut self.cache.borrow_mut(),
+            &mut self.registrations,
+            resources,
         );
     }
-
-    /// Records the base layers into a frozen picture, registering every font
-    /// and tile image the recording names.
-    fn build_base(&self, resources: &mut RecordingResources<'_>) -> BaseScene {
-        let mut registrations = Registrations::default();
-        let picture = Picture::record(|recorded| {
-            MapPainter::default().paint_base(
-                recorded,
-                &self.style,
-                self.camera,
-                &self.tiles,
-                &mut registrations,
-                resources,
-            );
-        });
-        BaseScene {
-            picture,
-            registrations,
-        }
-    }
-}
-
-fn camera_transform(source: Camera, target: Camera) -> Option<Affine> {
-    if source.region == target.region && source.viewport == target.viewport {
-        return None;
-    }
-    let scale = (target.zoom - source.zoom).exp2();
-    let source_center = source.coordinate_point(source.region.center);
-    let target_source_center = target.coordinate_point(source.region.center);
-    Some(Affine::new([
-        scale,
-        0.0,
-        0.0,
-        scale,
-        scale.mul_add(-source_center.0, target_source_center.0),
-        scale.mul_add(-source_center.1, target_source_center.1),
-    ]))
 }
 
 #[allow(
@@ -761,7 +831,11 @@ where
             .await?;
             let tile = Arc::new(unblock(move || decode(id, bytes)).await?);
             let mut cache = cache.borrow_mut();
-            select(&mut cache).insert(source_name, &tile);
+            if let Some((replaced_source, replaced_tile)) =
+                select(&mut cache).insert(source_name, &tile)
+            {
+                cache.pictures.release_tile(&replaced_source, replaced_tile);
+            }
             cache.enforce_budget();
             Ok::<_, MapLoadError>((index, tile))
         }
@@ -1548,39 +1622,30 @@ struct MapPainter {
     reason = "style evaluation converts bounded MapLibre numeric values and forwards explicit render-state parameters"
 )]
 impl MapPainter {
+    /// Paints the style's base layers under `camera`.
+    ///
+    /// Paint order is exactly the style's: each layer draws fully before the
+    /// next starts. For the vector kinds that batch (`fill`,
+    /// `fill-extrusion`, `line`, `circle`) that means replaying one recorded
+    /// [`TilePicture`] per (tile, layer) in tile order — the granularity that
+    /// keeps style layer L of every tile ahead of layer L+1 of any tile.
+    /// `symbol` labels instead place globally each frame so collision
+    /// detection spans tile boundaries, and `heatmap`, `raster` and
+    /// `hillshade` keep painting live.
+    #[expect(clippy::too_many_arguments, reason = "explicit render state")]
     fn paint_base(
         &mut self,
         scene: &mut impl ReplayDraw,
         style: &MapStyle,
         camera: Camera,
         tiles: &SourceTiles,
-        registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
-    ) {
-        self.paint_base_in_bounds(
-            scene,
-            style,
-            camera,
-            tiles,
-            camera_render_bounds(camera),
-            registrations,
-            resources,
-        );
-    }
-
-    #[expect(clippy::too_many_arguments, reason = "explicit render state")]
-    fn paint_base_in_bounds(
-        &mut self,
-        scene: &mut impl ReplayDraw,
-        style: &MapStyle,
-        camera: Camera,
-        tiles: &SourceTiles,
-        render_bounds: Rect,
+        cache: &mut TileCache,
         registrations: &mut Registrations,
         resources: &mut RecordingResources<'_>,
     ) {
         self.occupied_labels.clear();
-        for layer in &style.layers {
+        let render_bounds = camera_render_bounds(camera);
+        for (index, layer) in style.layers.iter().enumerate() {
             if !layer.active(camera.zoom) {
                 continue;
             }
@@ -1589,9 +1654,19 @@ impl MapPainter {
                 LayerKind::Fill
                 | LayerKind::FillExtrusion
                 | LayerKind::Line
-                | LayerKind::Symbol
                 | LayerKind::Circle => {
-                    self.paint_vector_layer(
+                    Self::paint_tile_layer(
+                        scene,
+                        style.revision,
+                        index,
+                        layer,
+                        camera,
+                        tiles,
+                        cache,
+                    );
+                }
+                LayerKind::Symbol => {
+                    self.paint_symbol_layer(
                         scene,
                         layer,
                         camera,
@@ -1625,6 +1700,103 @@ impl MapPainter {
                     layer = layer.id,
                     "skipped sky layer: the GPU map camera has no pitch"
                 ),
+            }
+        }
+    }
+
+    /// Replays one vector style layer tile by tile, recording each tile's
+    /// picture on first use.
+    fn paint_tile_layer(
+        scene: &mut impl ReplayDraw,
+        revision: u64,
+        index: usize,
+        layer: &StyleLayer,
+        camera: Camera,
+        tiles: &SourceTiles,
+        cache: &mut TileCache,
+    ) {
+        let source_name = layer
+            .source
+            .as_ref()
+            .unwrap_or_else(|| panic!("layer {} requires a vector source", layer.id));
+        let source_layer = layer
+            .source_layer
+            .as_ref()
+            .unwrap_or_else(|| panic!("layer {} requires source-layer", layer.id));
+        let source_tiles = tiles
+            .vector
+            .get(source_name)
+            .unwrap_or_else(|| panic!("vector source {source_name} was not prepared"));
+        for tile in source_tiles {
+            let key = TilePictureKey {
+                revision,
+                source: source_name.clone(),
+                tile: tile.id,
+                layer: index,
+            };
+            let picture = cache.pictures.get_or_record(&key, || {
+                record_tile_layer(layer, camera, tile, source_layer)
+            });
+            scene.picture(&picture.picture, Fixed(camera.tile_transform(tile.id)));
+        }
+    }
+
+    /// Paints a `symbol` layer's labels directly: collision placement is a
+    /// viewport-wide problem, so nothing about it can live in a tile picture.
+    fn paint_symbol_layer(
+        &mut self,
+        scene: &mut impl ReplayDraw,
+        layer: &StyleLayer,
+        camera: Camera,
+        tiles: &SourceTiles,
+        render_bounds: Rect,
+        registrations: &mut Registrations,
+        resources: &mut RecordingResources<'_>,
+    ) {
+        let source_name = layer
+            .source
+            .as_ref()
+            .unwrap_or_else(|| panic!("layer {} requires a vector source", layer.id));
+        let source_layer = layer
+            .source_layer
+            .as_ref()
+            .unwrap_or_else(|| panic!("layer {} requires source-layer", layer.id));
+        let source_tiles = tiles
+            .vector
+            .get(source_name)
+            .unwrap_or_else(|| panic!("vector source {source_name} was not prepared"));
+        for tile in source_tiles {
+            let Some(tile_layer) = tile.layers.get(source_layer) else {
+                continue;
+            };
+            for feature in &tile_layer.features {
+                if !feature_visible(
+                    camera,
+                    tile.id,
+                    tile_layer.extent,
+                    &feature.geometry,
+                    render_bounds,
+                ) {
+                    continue;
+                }
+                let context = EvaluationContext::new()
+                    .with_zoom(camera.zoom)
+                    .with_feature(feature.style.clone());
+                if !passes_filter(layer, &context) {
+                    continue;
+                }
+                self.paint_symbol(
+                    scene,
+                    layer,
+                    &context,
+                    camera,
+                    tile.id,
+                    tile_layer.extent,
+                    feature,
+                    render_bounds,
+                    registrations,
+                    resources,
+                );
             }
         }
     }
@@ -1831,55 +2003,6 @@ impl MapPainter {
         }
     }
 
-    /// Draws one `circle` layer feature: a screen-space disc per geometry point.
-    fn paint_circle(
-        scene: &mut impl ReplayDraw,
-        layer: &StyleLayer,
-        context: &EvaluationContext,
-        camera: Camera,
-        tile: TileId,
-        extent: u32,
-        geometry: &Geometry<f32>,
-    ) {
-        let radius = property_number(layer, "circle-radius", context).unwrap_or(5.0);
-        if radius <= 0.0 {
-            return;
-        }
-        let fill = property_color(layer, "circle-color", context).map(|color| {
-            color_with_opacity(
-                color,
-                property_number(layer, "circle-opacity", context).unwrap_or(1.0),
-            )
-        });
-        let stroke_width = property_number(layer, "circle-stroke-width", context).unwrap_or(0.0);
-        let stroke = (stroke_width > 0.0)
-            .then(|| property_color(layer, "circle-stroke-color", context))
-            .flatten()
-            .map(|color| {
-                color_with_opacity(
-                    color,
-                    property_number(layer, "circle-stroke-opacity", context).unwrap_or(1.0),
-                )
-            });
-        if fill.is_none() && stroke.is_none() {
-            return;
-        }
-        for point in geometry_points(geometry) {
-            let (x, y) = camera.tile_point(tile, extent, point.x, point.y);
-            let disc = ShapeData::of(&Circle::new((x, y), radius).to_path(0.1));
-            if let Some(fill) = fill {
-                scene.fill(Fixed(disc.clone()), Fixed(Paint::from(fill)));
-            }
-            if let Some(stroke) = stroke {
-                scene.stroke(
-                    Fixed(disc.clone()),
-                    Fixed(Stroke::new(stroke_width)),
-                    Fixed(Paint::from(stroke)),
-                );
-            }
-        }
-    }
-
     fn paint_overlays(
         &mut self,
         scene: &mut impl ReplayDraw,
@@ -1990,140 +2113,6 @@ impl MapPainter {
         let color = property_color(layer, "background-color", &context)
             .unwrap_or(Color::new([1.0, 1.0, 1.0, 1.0]));
         fill_viewport(scene, camera.viewport, color);
-    }
-
-    #[expect(clippy::too_many_arguments, reason = "explicit render state")]
-    fn paint_vector_layer(
-        &mut self,
-        scene: &mut impl ReplayDraw,
-        layer: &StyleLayer,
-        camera: Camera,
-        tiles: &SourceTiles,
-        render_bounds: Rect,
-        registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
-    ) {
-        let source_name = layer
-            .source
-            .as_ref()
-            .unwrap_or_else(|| panic!("layer {} requires a vector source", layer.id));
-        let source_layer = layer
-            .source_layer
-            .as_ref()
-            .unwrap_or_else(|| panic!("layer {} requires source-layer", layer.id));
-        let source_tiles = tiles
-            .vector
-            .get(source_name)
-            .unwrap_or_else(|| panic!("vector source {source_name} was not prepared"));
-        let mut matched_features = 0_usize;
-        let mut fill_batches = BTreeMap::<ColorKey, FillBatch>::new();
-        let mut line_batches = BTreeMap::<LineKey, LineBatch>::new();
-        for tile in source_tiles {
-            let Some(tile_layer) = tile.layers.get(source_layer) else {
-                continue;
-            };
-            for feature in &tile_layer.features {
-                if !feature_visible(
-                    camera,
-                    tile.id,
-                    tile_layer.extent,
-                    &feature.geometry,
-                    render_bounds,
-                ) {
-                    continue;
-                }
-                let context = EvaluationContext::new()
-                    .with_zoom(camera.zoom)
-                    .with_feature(feature.style.clone());
-                if !passes_filter(layer, &context) {
-                    continue;
-                }
-                matched_features += 1;
-                match layer.kind {
-                    LayerKind::Fill | LayerKind::FillExtrusion => {
-                        collect_fill(
-                            &mut fill_batches,
-                            &mut line_batches,
-                            layer,
-                            &context,
-                            camera,
-                            tile.id,
-                            tile_layer.extent,
-                            &feature.geometry,
-                        );
-                    }
-                    LayerKind::Line => collect_line(
-                        &mut line_batches,
-                        layer,
-                        &context,
-                        camera,
-                        tile.id,
-                        tile_layer.extent,
-                        &feature.geometry,
-                    ),
-                    LayerKind::Symbol => self.paint_symbol(
-                        scene,
-                        layer,
-                        &context,
-                        camera,
-                        tile.id,
-                        tile_layer.extent,
-                        feature,
-                        render_bounds,
-                        registrations,
-                        resources,
-                    ),
-                    LayerKind::Circle => Self::paint_circle(
-                        scene,
-                        layer,
-                        &context,
-                        camera,
-                        tile.id,
-                        tile_layer.extent,
-                        &feature.geometry,
-                    ),
-                    _ => unreachable!("vector layer kind was matched above"),
-                }
-            }
-        }
-        Self::paint_vector_batches(
-            scene,
-            layer,
-            source_layer,
-            matched_features,
-            &fill_batches,
-            &line_batches,
-        );
-    }
-
-    fn paint_vector_batches(
-        scene: &mut impl ReplayDraw,
-        layer: &StyleLayer,
-        source_layer: &str,
-        matched_features: usize,
-        fill_batches: &BTreeMap<ColorKey, FillBatch>,
-        line_batches: &BTreeMap<LineKey, LineBatch>,
-    ) {
-        for batch in fill_batches.values() {
-            emit_fill_batch(scene, batch);
-        }
-        for batch in line_batches.values() {
-            emit_line_batch(scene, batch);
-        }
-        tracing::trace!(
-            layer = layer.id,
-            source_layer,
-            matched_features,
-            path_elements = fill_batches
-                .values()
-                .map(|batch| batch.path.elements().len())
-                .sum::<usize>()
-                + line_batches
-                    .values()
-                    .map(|batch| batch.path.elements().len())
-                    .sum::<usize>(),
-            "encoded GPU map style layer"
-        );
     }
 
     #[expect(clippy::too_many_arguments, reason = "explicit render state")]
@@ -2685,18 +2674,146 @@ fn emit_line_batch(scene: &mut impl ReplayDraw, batch: &LineBatch) {
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "fill batching keeps style, projection, and MVT geometry inputs explicit"
-)]
+/// Geometry conversion between an MVT layer's coordinate system and the
+/// recorded tile picture's.
+///
+/// Tile pictures draw in a tile-local square [`TILE_SIZE`] units on a side:
+/// `to_path` scales extent units into that space, `to_local` scales screen
+/// pixels (stroke widths, circle radii, clip pads) into it at the record
+/// camera's zoom, and `units_per_pixel` is extent units per screen pixel —
+/// the simplification tolerance unit. One antialiased pixel is kept outside
+/// every clip boundary so strokes centred on it are never shaved.
+struct TileSpace {
+    extent: u32,
+    to_path: f64,
+    to_local: f64,
+    units_per_pixel: f32,
+}
+
+impl TileSpace {
+    fn new(camera: Camera, tile: TileId, extent: u32) -> Self {
+        let tile_scale = (camera.zoom - f64::from(tile.z)).exp2();
+        Self {
+            extent,
+            to_path: f64::from(TILE_SIZE) / f64::from(extent),
+            to_local: 1.0 / tile_scale,
+            units_per_pixel: camera.tile_units_per_pixel(tile.z, extent),
+        }
+    }
+
+    /// Screen pixels to clip pad in extent units.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a clip pad in MVT extent units stays well inside f32 range"
+    )]
+    fn pad(&self, pixels: f64) -> f32 {
+        (pixels * f64::from(self.units_per_pixel)) as f32
+    }
+}
+
+/// The antialiased pixel kept beyond each clip boundary.
+const ANTIALIAS_PIXEL: f64 = 1.0;
+
+/// Records one style layer of one vector tile into a [`TilePicture`].
+///
+/// Property evaluation and simplification run against `camera` — the camera
+/// the picture was first needed at; replay under a moved camera scales the
+/// whole tile, stroke widths included, exactly as the old whole-viewport
+/// picture did. The batching is per tile: a feature never merges into a path
+/// belonging to another tile, so no path grows with the viewport.
+fn record_tile_layer(
+    layer: &StyleLayer,
+    camera: Camera,
+    tile: &VectorTile,
+    source_layer: &str,
+) -> TilePicture {
+    let mut fill_batches = BTreeMap::<ColorKey, FillBatch>::new();
+    let mut line_batches = BTreeMap::<LineKey, LineBatch>::new();
+    let (mut matched_features, mut path_elements, mut max_path_elements) =
+        (0_usize, 0_usize, 0_usize);
+    if let Some(tile_layer) = tile.layers.get(source_layer) {
+        let space = TileSpace::new(camera, tile.id, tile_layer.extent);
+        for feature in &tile_layer.features {
+            let context = EvaluationContext::new()
+                .with_zoom(camera.zoom)
+                .with_feature(feature.style.clone());
+            if !passes_filter(layer, &context) {
+                continue;
+            }
+            matched_features += 1;
+            match layer.kind {
+                LayerKind::Fill | LayerKind::FillExtrusion => collect_fill(
+                    &mut fill_batches,
+                    &mut line_batches,
+                    layer,
+                    &context,
+                    &space,
+                    &feature.geometry,
+                ),
+                LayerKind::Line => collect_line(
+                    &mut line_batches,
+                    layer,
+                    &context,
+                    &space,
+                    &feature.geometry,
+                ),
+                LayerKind::Circle => collect_circle(
+                    &mut fill_batches,
+                    &mut line_batches,
+                    layer,
+                    &context,
+                    &space,
+                    &feature.geometry,
+                ),
+                _ => unreachable!("only batched vector kinds record tile pictures"),
+            }
+        }
+    }
+    let picture = Picture::record(|scene| {
+        for batch in fill_batches.values() {
+            emit_fill_batch(scene, batch);
+        }
+        for batch in line_batches.values() {
+            emit_line_batch(scene, batch);
+        }
+    });
+    for elements in fill_batches
+        .values()
+        .map(|batch| batch.path.elements().len())
+        .chain(
+            line_batches
+                .values()
+                .map(|batch| batch.path.elements().len()),
+        )
+    {
+        path_elements += elements;
+        max_path_elements = max_path_elements.max(elements);
+    }
+    tracing::trace!(
+        layer = layer.id,
+        source_layer,
+        tile = ?tile.id,
+        matched_features,
+        path_elements,
+        "recorded GPU map tile picture"
+    );
+    TilePicture {
+        picture,
+        // The estimate the shared byte budget charges: every batched path
+        // element plus a flat display-list overhead.
+        byte_len: (path_elements as u64)
+            .saturating_mul(size_of::<PathEl>() as u64)
+            .saturating_add(512),
+        max_path_elements,
+    }
+}
+
 fn collect_fill(
     fills: &mut BTreeMap<ColorKey, FillBatch>,
     lines: &mut BTreeMap<LineKey, LineBatch>,
     layer: &StyleLayer,
     context: &EvaluationContext,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
+    space: &TileSpace,
     geometry: &Geometry<f32>,
 ) {
     let color_property = if layer.kind == LayerKind::FillExtrusion {
@@ -2716,30 +2833,36 @@ fn collect_fill(
         color,
         property_number(layer, opacity_property, context).unwrap_or(1.0),
     );
-    let Some(path) = geometry_path(camera, tile, extent, geometry, true) else {
+    let outline = property_color(layer, "fill-outline-color", context);
+    // The stroke drawing over this geometry is the 1px outline (if any);
+    // buffer duplicates may paint half that width plus one antialiased pixel
+    // past the tile edge and no further.
+    let pad = space.pad(outline.map_or(0.0, |_| 0.5) + ANTIALIAS_PIXEL);
+    if !feature_in_bounds(geometry, space.extent, pad) {
         return;
-    };
-    let key = ColorKey::new(color);
-    fills
-        .entry(key)
-        .or_insert_with(|| FillBatch {
-            color,
-            path: BezPath::new(),
-        })
-        .path
-        .extend(path.elements().iter().copied());
-    if let Some(outline) = property_color(layer, "fill-outline-color", context)
-        && let Some(path) = fill_outline_path(camera, tile, extent, geometry)
+    }
+    if let Some(path) = clipped_geometry_path(space, geometry, pad, true) {
+        fills
+            .entry(ColorKey::new(color))
+            .or_insert_with(|| FillBatch {
+                color,
+                path: BezPath::new(),
+            })
+            .path
+            .extend(path.elements().iter().copied());
+    }
+    if let Some(outline) = outline
+        && let Some(path) = clipped_outline_path(space, geometry, pad)
     {
         let key = LineKey {
             color: ColorKey::new(outline),
-            width: 1.0_f64.to_bits(),
+            width: space.to_local.to_bits(),
         };
         lines
             .entry(key)
             .or_insert_with(|| LineBatch {
                 color: outline,
-                width: 1.0,
+                width: space.to_local,
                 path: BezPath::new(),
             })
             .path
@@ -2751,9 +2874,7 @@ fn collect_line(
     lines: &mut BTreeMap<LineKey, LineBatch>,
     layer: &StyleLayer,
     context: &EvaluationContext,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
+    space: &TileSpace,
     geometry: &Geometry<f32>,
 ) {
     let Some(mut color) = property_color(layer, "line-color", context) else {
@@ -2768,11 +2889,18 @@ fn collect_line(
         .mul_add(
             2.0,
             property_number(layer, "line-width", context).unwrap_or(1.0),
-        );
-    let Some(path) = geometry_path(camera, tile, extent, geometry, false) else {
+        )
+        .max(0.0);
+    let pad = space.pad(width.mul_add(0.5, ANTIALIAS_PIXEL));
+    if !feature_in_bounds(geometry, space.extent, pad) {
+        return;
+    }
+    let Some(path) = clipped_geometry_path(space, geometry, pad, false) else {
         return;
     };
-    let width = width.max(0.0);
+    // Stroke widths are recorded in tile-local units, so the replayed
+    // transform puts them back on screen in pixels.
+    let width = width * space.to_local;
     let key = LineKey {
         color: ColorKey::new(color),
         width: width.to_bits(),
@@ -2786,6 +2914,83 @@ fn collect_line(
         })
         .path
         .extend(path.elements().iter().copied());
+}
+
+/// Collects one `circle` feature into the same colour/width batches as the
+/// polygon layers: a disc per geometry point, in tile-local units.
+fn collect_circle(
+    fills: &mut BTreeMap<ColorKey, FillBatch>,
+    lines: &mut BTreeMap<LineKey, LineBatch>,
+    layer: &StyleLayer,
+    context: &EvaluationContext,
+    space: &TileSpace,
+    geometry: &Geometry<f32>,
+) {
+    let radius = property_number(layer, "circle-radius", context).unwrap_or(5.0);
+    if radius <= 0.0 {
+        return;
+    }
+    let fill = property_color(layer, "circle-color", context).map(|color| {
+        color_with_opacity(
+            color,
+            property_number(layer, "circle-opacity", context).unwrap_or(1.0),
+        )
+    });
+    let stroke_width = property_number(layer, "circle-stroke-width", context).unwrap_or(0.0);
+    let stroke = (stroke_width > 0.0)
+        .then(|| property_color(layer, "circle-stroke-color", context))
+        .flatten()
+        .map(|color| {
+            color_with_opacity(
+                color,
+                property_number(layer, "circle-stroke-opacity", context).unwrap_or(1.0),
+            )
+        });
+    if fill.is_none() && stroke.is_none() {
+        return;
+    }
+    let pad = space.pad(stroke_width.mul_add(0.5, radius + ANTIALIAS_PIXEL));
+    let extent = gpu_scalar(space.extent);
+    let radius = radius * space.to_local;
+    for point in geometry_points(geometry) {
+        if point.x < -pad || point.y < -pad || point.x > extent + pad || point.y > extent + pad {
+            continue;
+        }
+        let disc = Circle::new(
+            (
+                f64::from(point.x) * space.to_path,
+                f64::from(point.y) * space.to_path,
+            ),
+            radius,
+        )
+        .to_path(0.1);
+        if let Some(fill) = fill {
+            fills
+                .entry(ColorKey::new(fill))
+                .or_insert_with(|| FillBatch {
+                    color: fill,
+                    path: BezPath::new(),
+                })
+                .path
+                .extend(disc.elements().iter().copied());
+        }
+        if let Some(stroke) = stroke {
+            let width = stroke_width * space.to_local;
+            let key = LineKey {
+                color: ColorKey::new(stroke),
+                width: width.to_bits(),
+            };
+            lines
+                .entry(key)
+                .or_insert_with(|| LineBatch {
+                    color: stroke,
+                    width,
+                    path: BezPath::new(),
+                })
+                .path
+                .extend(disc.elements().iter().copied());
+        }
+    }
 }
 
 fn property_value(layer: &StyleLayer, name: &str, context: &EvaluationContext) -> Option<Value> {
@@ -2889,56 +3094,25 @@ fn label_origin(
     (x, y)
 }
 
-fn geometry_path(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
+/// `geometry` clipped to the tile extent grown by `pad`, then emitted as a
+/// path in tile-local units. Clipping keeps buffer duplicates from
+/// overlapping and keeps off-tile segments out of the stroke entirely.
+fn clipped_geometry_path(
+    space: &TileSpace,
     geometry: &Geometry<f32>,
+    pad: f32,
     close: bool,
 ) -> Option<BezPath> {
     let mut path = BezPath::new();
-    let tolerance = camera.tile_units_per_pixel(tile.z, extent) * 2.0;
     match geometry {
-        Geometry::LineString(line) => {
-            add_line(
-                &mut path,
-                camera,
-                tile,
-                extent,
-                &line.simplify(tolerance),
-                close,
-            );
-        }
-        Geometry::MultiLineString(lines) => {
-            for line in &lines.0 {
-                add_line(
-                    &mut path,
-                    camera,
-                    tile,
-                    extent,
-                    &line.simplify(tolerance),
-                    close,
-                );
+        Geometry::LineString(_) | Geometry::MultiLineString(_) => {
+            for line in clipped_lines(space, geometry, pad).0 {
+                add_line(&mut path, &line, space.to_path, close);
             }
         }
-        Geometry::Polygon(polygon) => {
-            add_polygon(
-                &mut path,
-                camera,
-                tile,
-                extent,
-                &polygon.simplify(tolerance),
-            );
-        }
-        Geometry::MultiPolygon(polygons) => {
-            for polygon in &polygons.0 {
-                add_polygon(
-                    &mut path,
-                    camera,
-                    tile,
-                    extent,
-                    &polygon.simplify(tolerance),
-                );
+        Geometry::Polygon(_) | Geometry::MultiPolygon(_) => {
+            for polygon in clipped_polygons(space, geometry, pad).0 {
+                add_polygon(&mut path, &polygon, space.to_path);
             }
         }
         _ => return None,
@@ -2946,38 +3120,83 @@ fn geometry_path(
     (!path.is_empty()).then_some(path)
 }
 
-fn fill_outline_path(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    geometry: &Geometry<f32>,
-) -> Option<BezPath> {
+/// The fill-outline variant of [`clipped_geometry_path`]: only polygon
+/// geometry contributes, and ring segments running along a clip boundary —
+/// the vector-tile encoder's at `0`/`extent` or ours at `±pad` — are skipped
+/// so no artificial seam is stroked.
+fn clipped_outline_path(space: &TileSpace, geometry: &Geometry<f32>, pad: f32) -> Option<BezPath> {
     let mut path = BezPath::new();
-    let tolerance = camera.tile_units_per_pixel(tile.z, extent) * 2.0;
     match geometry {
-        Geometry::Polygon(polygon) => {
-            add_polygon_outline(
-                &mut path,
-                camera,
-                tile,
-                extent,
-                &polygon.simplify(tolerance),
-            );
-        }
-        Geometry::MultiPolygon(polygons) => {
-            for polygon in &polygons.0 {
-                add_polygon_outline(
-                    &mut path,
-                    camera,
-                    tile,
-                    extent,
-                    &polygon.simplify(tolerance),
-                );
+        Geometry::Polygon(_) | Geometry::MultiPolygon(_) => {
+            for polygon in clipped_polygons(space, geometry, pad).0 {
+                add_polygon_outline(&mut path, &polygon, space, pad);
             }
         }
         _ => return None,
     }
     (!path.is_empty()).then_some(path)
+}
+
+/// The tile's clip rectangle as a `geo` polygon: the extent grown by `pad`
+/// on every side.
+fn tile_clip_polygon(extent: u32, pad: f32) -> Polygon<f32> {
+    let edge = gpu_scalar(extent) + pad;
+    Polygon::new(
+        LineString::from(vec![
+            (-pad, -pad),
+            (edge, -pad),
+            (edge, edge),
+            (-pad, edge),
+            (-pad, -pad),
+        ]),
+        Vec::new(),
+    )
+}
+
+/// Line geometry simplified and clipped to the expanded tile extent.
+fn clipped_lines(space: &TileSpace, geometry: &Geometry<f32>, pad: f32) -> MultiLineString<f32> {
+    let tolerance = space.units_per_pixel * 2.0;
+    let lines = match geometry {
+        Geometry::LineString(line) => vec![line.simplify(tolerance)],
+        Geometry::MultiLineString(lines) => lines
+            .0
+            .iter()
+            .map(|line| line.simplify(tolerance))
+            .collect(),
+        _ => return MultiLineString::new(Vec::new()),
+    };
+    tile_clip_polygon(space.extent, pad).clip(&MultiLineString::new(lines), false)
+}
+
+/// Polygon geometry simplified and intersected with the expanded tile
+/// extent.
+fn clipped_polygons(space: &TileSpace, geometry: &Geometry<f32>, pad: f32) -> MultiPolygon<f32> {
+    let tolerance = space.units_per_pixel * 2.0;
+    let subject = match geometry {
+        Geometry::Polygon(polygon) => MultiPolygon::new(vec![polygon.simplify(tolerance)]),
+        Geometry::MultiPolygon(polygons) => MultiPolygon::new(
+            polygons
+                .0
+                .iter()
+                .map(|polygon| polygon.simplify(tolerance))
+                .collect(),
+        ),
+        _ => return MultiPolygon::new(Vec::new()),
+    };
+    subject.intersection(&tile_clip_polygon(space.extent, pad))
+}
+
+/// Whether any part of `geometry` can lie inside the tile extent grown by
+/// `pad`, judged by its extent-space bounding rect.
+fn feature_in_bounds(geometry: &Geometry<f32>, extent: u32, pad: f32) -> bool {
+    let Some(bounds) = geometry.bounding_rect() else {
+        return true;
+    };
+    let edge = gpu_scalar(extent) + pad;
+    bounds.min().x <= edge
+        && bounds.max().x >= -pad
+        && bounds.min().y <= edge
+        && bounds.max().y >= -pad
 }
 
 fn camera_render_bounds(camera: Camera) -> Rect {
@@ -3010,79 +3229,64 @@ fn feature_visible(
     feature_bounds.overlaps(render_bounds)
 }
 
-fn add_polygon(
-    path: &mut BezPath,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    polygon: &Polygon<f32>,
-) {
-    add_line(path, camera, tile, extent, polygon.exterior(), true);
+fn add_polygon(path: &mut BezPath, polygon: &Polygon<f32>, scale: f64) {
+    add_line(path, polygon.exterior(), scale, true);
     for interior in polygon.interiors() {
-        add_line(path, camera, tile, extent, interior, true);
+        add_line(path, interior, scale, true);
     }
 }
 
-fn add_polygon_outline(
-    path: &mut BezPath,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    polygon: &Polygon<f32>,
-) {
-    add_ring_outline(path, camera, tile, extent, polygon.exterior());
+fn add_polygon_outline(path: &mut BezPath, polygon: &Polygon<f32>, space: &TileSpace, pad: f32) {
+    add_ring_outline(path, polygon.exterior(), space, pad);
     for interior in polygon.interiors() {
-        add_ring_outline(path, camera, tile, extent, interior);
+        add_ring_outline(path, interior, space, pad);
     }
 }
 
-fn add_ring_outline(
-    path: &mut BezPath,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    ring: &LineString<f32>,
-) {
-    let tile_extent = gpu_scalar(extent);
+fn add_ring_outline(path: &mut BezPath, ring: &LineString<f32>, space: &TileSpace, pad: f32) {
     let mut previous_end = None;
     for segment in ring.0.windows(2) {
         let [start, end] = [segment[0], segment[1]];
-        if tile_boundary_segment(start, end, tile_extent) {
+        if boundary_segment(start, end, space.extent, pad) {
             previous_end = None;
             continue;
         }
         if previous_end != Some(start) {
-            path.move_to(camera.tile_point(tile, extent, start.x, start.y));
+            path.move_to((
+                f64::from(start.x) * space.to_path,
+                f64::from(start.y) * space.to_path,
+            ));
         }
-        path.line_to(camera.tile_point(tile, extent, end.x, end.y));
+        path.line_to((
+            f64::from(end.x) * space.to_path,
+            f64::from(end.y) * space.to_path,
+        ));
         previous_end = Some(end);
     }
 }
 
-const fn tile_boundary_segment(start: Coord<f32>, end: Coord<f32>, extent: f32) -> bool {
-    let zero = 0.0_f32.to_bits();
-    let extent = extent.to_bits();
-    (start.x.to_bits() == zero && end.x.to_bits() == zero)
-        || (start.y.to_bits() == zero && end.y.to_bits() == zero)
-        || (start.x.to_bits() == extent && end.x.to_bits() == extent)
-        || (start.y.to_bits() == extent && end.y.to_bits() == extent)
+/// A segment lying on an artificial edge: the vector-tile encoder's clip
+/// lines at `0`/`extent`, or this clip's at `-pad`/`extent+pad`.
+fn boundary_segment(start: Coord<f32>, end: Coord<f32>, extent: u32, pad: f32) -> bool {
+    let edge = gpu_scalar(extent);
+    let on_seam = |a: f32, b: f32| {
+        a.to_bits() == b.to_bits()
+            && (a.to_bits() == 0.0_f32.to_bits()
+                || a.to_bits() == edge.to_bits()
+                || a.to_bits() == (-pad).to_bits()
+                || a.to_bits() == (edge + pad).to_bits())
+    };
+    on_seam(start.x, end.x) || on_seam(start.y, end.y)
 }
 
-fn add_line(
-    path: &mut BezPath,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    line: &LineString<f32>,
-    close: bool,
-) {
+fn add_line(path: &mut BezPath, line: &LineString<f32>, scale: f64, close: bool) {
     let mut points = line.points();
     let Some(first) = points.next() else {
         return;
     };
-    path.move_to(camera.tile_point(tile, extent, first.x(), first.y()));
+    path.move_to((f64::from(first.x()) * scale, f64::from(first.y()) * scale));
     for point in points {
-        path.line_to(camera.tile_point(tile, extent, point.x(), point.y()));
+        path.line_to((f64::from(point.x()) * scale, f64::from(point.y()) * scale));
     }
     if close {
         path.close_path();
@@ -3302,30 +3506,49 @@ mod tests {
         )
     }
 
+    /// Tile pictures replay through `Camera::tile_transform`; it must land
+    /// tile-local points exactly where `tile_point` puts them on screen, for
+    /// the prepared camera and for a panned one alike.
     #[test]
-    fn cached_scene_transform_matches_live_camera_projection() {
+    fn tile_transform_matches_tile_point_projection() {
         let viewport = Viewport {
             width: 1_200,
             height: 800,
         };
-        let source = Camera::new(manhattan_region(0.030, 0.050), viewport, 0, 22);
-        let target_region = Region::new(
-            Coordinate::from_degrees(40.7680, -73.9655)
-                .expect("shifted Manhattan coordinate must be valid"),
-            0.015,
-            0.025,
-        );
-        let target = Camera::new(target_region, viewport, 0, 22);
-        let coordinate =
-            Coordinate::from_degrees(40.7484, -73.9857).expect("test coordinate must be valid");
-        let source_point = source.coordinate_point(coordinate);
-        let expected = target.coordinate_point(coordinate);
-        let transformed = camera_transform(source, target)
-            .expect("different cameras require a reprojection transform")
-            * Point::new(source_point.0, source_point.1);
+        let tile = TileId {
+            z: 14,
+            x: 4_824,
+            y: 6_160,
+        };
+        for region in [
+            manhattan_region(0.030, 0.050),
+            Region::new(
+                Coordinate::from_degrees(40.7680, -73.9655)
+                    .expect("shifted Manhattan coordinate must be valid"),
+                0.015,
+                0.025,
+            ),
+        ] {
+            let camera = Camera::new(region, viewport, 0, 22);
+            let transform = camera.tile_transform(tile);
+            for (x, y) in [(0.0_f64, 0.0_f64), (512.0, 384.5), (255.75, 511.9)] {
+                let extent = 4_096;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "tile-local test points are small exact fractions"
+                )]
+                let expected = camera.tile_point(
+                    tile,
+                    extent,
+                    (x * f64::from(extent) / f64::from(TILE_SIZE)) as f32,
+                    (y * f64::from(extent) / f64::from(TILE_SIZE)) as f32,
+                );
+                let transformed = transform * Point::new(x, y);
 
-        assert!((transformed.x - expected.0).abs() < 1e-6);
-        assert!((transformed.y - expected.1).abs() < 1e-6);
+                assert!((transformed.x - expected.0).abs() < 1e-4);
+                assert!((transformed.y - expected.1).abs() < 1e-4);
+            }
+        }
     }
 
     #[test]
@@ -3357,6 +3580,8 @@ mod tests {
         assert!((halfway.center.longitude.get() + 180.0).abs() < 1e-12);
     }
 
+    /// The outline must skip artificial edges: the vector-tile encoder's
+    /// seams on `0`/`extent` and the clip rectangle's own at `±pad`.
     #[test]
     fn fill_outlines_omit_vector_tile_clip_edges() {
         let camera = Camera::new(
@@ -3368,6 +3593,13 @@ mod tests {
             0,
             22,
         );
+        let tile = TileId {
+            z: 14,
+            x: 4_824,
+            y: 6_160,
+        };
+        let space = TileSpace::new(camera, tile, 100);
+        let pad = space.pad(1.5);
         let polygon = Polygon::new(
             LineString::from(vec![
                 (0.0, 10.0),
@@ -3378,17 +3610,8 @@ mod tests {
             ]),
             Vec::new(),
         );
-        let path = fill_outline_path(
-            camera,
-            TileId {
-                z: 14,
-                x: 4_824,
-                y: 6_160,
-            },
-            100,
-            &Geometry::Polygon(polygon),
-        )
-        .expect("non-clipped polygon edges must produce an outline");
+        let path = clipped_outline_path(&space, &Geometry::Polygon(polygon), pad)
+            .expect("non-boundary polygon edges must produce an outline");
 
         assert_eq!(path.elements().len(), 4);
         assert!(matches!(path.elements()[0], PathEl::MoveTo(_)));
@@ -3528,6 +3751,7 @@ mod tests {
         let style = MapStyle {
             sources: BTreeMap::new(),
             layers: Vec::new(),
+            revision: 0,
         };
         let prepared = PreparedMap {
             chrome: MapChrome {
@@ -3541,7 +3765,7 @@ mod tests {
             location: None,
             painter: MapPainter::default(),
             registrations: Registrations::default(),
-            base: None,
+            cache: Rc::new(RefCell::new(TileCache::new(1_000_000))),
         };
         let config = MapConfig {
             region: Computed::constant(region),
@@ -3620,6 +3844,280 @@ mod tests {
                 Some(core::time::Duration::from_millis(10))
             );
         }
+    }
+
+    /// A fixture style exercising every layer kind the painter knows, in the
+    /// mixed order a real style uses: global and per-tile layers interleaved.
+    fn fixture_style() -> MapStyle {
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            String::from("basemap"),
+            TileSource {
+                kind: SourceKind::Vector,
+                templates: vec![String::from("https://tiles.example/{z}/{x}/{y}")],
+                min_zoom: 0,
+                max_zoom: 14,
+                tile_size: TILE_SIZE,
+                encoding: crate::style::DemEncoding::Mapbox,
+            },
+        );
+        let layer = |id: &str, kind: LayerKind, source_layer: &str| StyleLayer {
+            id: String::from(id),
+            kind,
+            source: Some(String::from("basemap")),
+            source_layer: Some(String::from(source_layer)),
+            min_zoom: f64::NEG_INFINITY,
+            max_zoom: f64::INFINITY,
+            filter: None,
+            properties: BTreeMap::new(),
+            visible: true,
+        };
+        MapStyle {
+            sources,
+            layers: vec![
+                layer("land", LayerKind::Fill, "landcover"),
+                layer("roads", LayerKind::Line, "transportation"),
+                layer("dots", LayerKind::Circle, "poi"),
+                layer("names", LayerKind::Symbol, "place"),
+            ],
+            revision: 7,
+        }
+    }
+
+    /// A vector tile whose three source layers each carry `count` features
+    /// spread across its extent.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::suboptimal_flops,
+        reason = "fixture coordinates stay small and exact; plain arithmetic reads better"
+    )]
+    fn fixture_tile(id: TileId, count: usize) -> Arc<VectorTile> {
+        let features = |geometry: Geometry<f32>| TileFeature {
+            geometry,
+            style: maplibre_expr::Feature::default(),
+        };
+        let line = || {
+            MultiLineString::new(
+                (0..count)
+                    .map(|index| {
+                        let base = 100.0 + 300.0 * index as f32;
+                        LineString::from(vec![
+                            (base, 0.0),
+                            (base + 1_000.0, 2_000.0),
+                            (base + 2_000.0, 4_096.0),
+                        ])
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let polygon = Polygon::new(
+            LineString::from(vec![
+                (10.0, 10.0),
+                (2_000.0, 10.0),
+                (2_000.0, 2_000.0),
+                (10.0, 2_000.0),
+                (10.0, 10.0),
+            ]),
+            Vec::new(),
+        );
+        let mut layers = HashMap::new();
+        layers.insert(
+            String::from("landcover"),
+            crate::tile::TileLayer {
+                extent: 4_096,
+                features: vec![features(Geometry::MultiPolygon(MultiPolygon::new(vec![
+                    polygon,
+                ])))],
+            },
+        );
+        layers.insert(
+            String::from("transportation"),
+            crate::tile::TileLayer {
+                extent: 4_096,
+                features: vec![features(Geometry::MultiLineString(line()))],
+            },
+        );
+        layers.insert(
+            String::from("poi"),
+            crate::tile::TileLayer {
+                extent: 4_096,
+                features: vec![features(Geometry::MultiPoint(geo_types::MultiPoint::new(
+                    (0..count)
+                        .map(|index| {
+                            geo_types::Point::new(
+                                500.0 + index as f32 * 100.0,
+                                500.0 + index as f32 * 100.0,
+                            )
+                        })
+                        .collect(),
+                )))],
+            },
+        );
+        Arc::new(VectorTile {
+            id,
+            layers,
+            byte_len: 1_024,
+        })
+    }
+
+    fn fixture_prepared(
+        region: Region,
+        style: &MapStyle,
+        tiles: Vec<Arc<VectorTile>>,
+        cache: &Rc<RefCell<TileCache>>,
+    ) -> PreparedMap {
+        let viewport = Viewport {
+            width: 800,
+            height: 600,
+        };
+        PreparedMap {
+            style: style.clone(),
+            camera: Camera::new(region, viewport, 0, 22),
+            tiles: SourceTiles {
+                vector: BTreeMap::from([(String::from("basemap"), tiles)]),
+                raster: BTreeMap::new(),
+                dem: BTreeMap::new(),
+            },
+            annotations: Vec::new(),
+            location: None,
+            chrome: MapChrome {
+                compass: MapVisibility::Hidden,
+                scale: MapVisibility::Hidden,
+            },
+            painter: MapPainter::default(),
+            registrations: Registrations::default(),
+            cache: Rc::clone(cache),
+        }
+    }
+
+    /// Panning to a partly overlapping tile set must record only the tiles
+    /// that were not already recorded — the whole point of per-tile
+    /// pictures. Tile pictures live in the shared cache, so a second
+    /// `PreparedMap` (what a settled pan produces) pays only for its new
+    /// tiles.
+    #[test]
+    fn panning_records_only_newly_visible_tiles() {
+        let renderer = OffscreenRenderer::<Raster>::cpu().expect("a CPU engine");
+        let size = OffscreenSize::try_from_pixels(800, 600).expect("non-zero size");
+        let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
+        let style = fixture_style();
+        let tiles_a = vec![
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 100,
+                    y: 100,
+                },
+                3,
+            ),
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 101,
+                    y: 100,
+                },
+                3,
+            ),
+        ];
+        let mut prepared =
+            fixture_prepared(manhattan_region(0.030, 0.050), &style, tiles_a, &cache);
+        renderer
+            .render(&mut prepared, size, 1.0)
+            .expect("first frame must render");
+        // 2 tiles × 3 recorded layer kinds (fill, line, circle); symbols are
+        // global and record nothing.
+        assert_eq!(cache.borrow().pictures.recordings, 6);
+        let after_first = cache.borrow().pictures.recordings;
+
+        renderer
+            .render(&mut prepared, size, 1.0)
+            .expect("a same-camera repaint must render");
+        assert_eq!(
+            cache.borrow().pictures.recordings,
+            after_first,
+            "a repaint at the same camera records nothing"
+        );
+
+        // A pan that keeps tile z=14,x=101 visible and reveals z=14,x=102.
+        let tiles_b = vec![
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 101,
+                    y: 100,
+                },
+                3,
+            ),
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 102,
+                    y: 100,
+                },
+                3,
+            ),
+        ];
+        let mut panned = fixture_prepared(manhattan_region(0.040, 0.060), &style, tiles_b, &cache);
+        renderer
+            .render(&mut panned, size, 1.0)
+            .expect("the panned frame must render");
+        assert_eq!(
+            cache.borrow().pictures.recordings - after_first,
+            3,
+            "only the new tile's three layer pictures may record"
+        );
+    }
+
+    /// No batched path may outgrow a single tile's content: batching stops
+    /// at the tile boundary, so the largest path a frame produces is bounded
+    /// by the densest tile, not by the viewport.
+    #[test]
+    fn the_largest_path_is_bounded_by_one_tile() {
+        let renderer = OffscreenRenderer::<Raster>::cpu().expect("a CPU engine");
+        let size = OffscreenSize::try_from_pixels(800, 600).expect("non-zero size");
+        let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
+        let style = fixture_style();
+        // Two tiles with deliberately different content sizes, so a merged
+        // batch would be far larger than either tile's own.
+        let tiles = vec![
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 100,
+                    y: 100,
+                },
+                8,
+            ),
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 101,
+                    y: 100,
+                },
+                2,
+            ),
+        ];
+        let mut prepared = fixture_prepared(manhattan_region(0.030, 0.050), &style, tiles, &cache);
+        renderer
+            .render(&mut prepared, size, 1.0)
+            .expect("the frame must render");
+
+        let cache = cache.borrow();
+        let largest = cache
+            .pictures
+            .pictures
+            .iter()
+            .map(|(_, picture)| picture.max_path_elements)
+            .max()
+            .expect("the fixture records batched layers");
+        // One clipped triangle line string is move+2×line elements; the
+        // densest tile holds eight of them plus the circle discs it batches
+        // with, and no picture may merge across tiles.
+        let one_tile_bound = 8 * 3;
+        assert!(
+            largest <= one_tile_bound,
+            "largest path {largest} exceeds one tile's content {one_tile_bound}"
+        );
     }
 
     /// The frozen base picture replays under a camera transform — the same
