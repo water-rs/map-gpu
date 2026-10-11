@@ -235,14 +235,46 @@ fn tile_bytes(byte_len: usize) -> u64 {
     u64::try_from(byte_len).unwrap_or(u64::MAX)
 }
 
-/// Identifies a tile picture: the style revision pins it so a style change
-/// never replays content recorded under another layer set.
+/// Identifies layer-granular content derived from one tile — a recorded
+/// picture or a shaded terrain image — by style fingerprint, source, tile
+/// and layer. The fingerprint pins the content so a style change never
+/// replays what another document produced.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TilePictureKey {
-    revision: u64,
+    fingerprint: u64,
     source: String,
     tile: TileId,
     layer: usize,
+}
+
+/// The feature-granular variant of [`TilePictureKey`]: one shaped symbol
+/// label per tile feature.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TileFeatureKey {
+    fingerprint: u64,
+    source: String,
+    tile: TileId,
+    layer: usize,
+    feature: usize,
+}
+
+/// A derived-content key located by `(source, tile)`, so the content can be
+/// released with the decoded tile it was derived from.
+trait TileLocator {
+    /// The `(source, tile)` the keyed content was recorded from.
+    fn tile_locator(&self) -> (String, TileId);
+}
+
+impl TileLocator for TilePictureKey {
+    fn tile_locator(&self) -> (String, TileId) {
+        (self.source.clone(), self.tile)
+    }
+}
+
+impl TileLocator for TileFeatureKey {
+    fn tile_locator(&self) -> (String, TileId) {
+        (self.source.clone(), self.tile)
+    }
 }
 
 /// One style layer of one vector tile, recorded in the tile's
@@ -266,80 +298,157 @@ impl std::fmt::Debug for TilePicture {
     }
 }
 
-/// LRU map of recorded tile pictures, byte-accounted against the same budget
+/// A shaped run's camera-independent payload: the font the frame that emits
+/// it must still register, plus its glyph ids and positions in text space.
+struct LabelRun {
+    font: parley::FontData,
+    font_size: f32,
+    coords: Arc<[i16]>,
+    glyphs: Arc<[Glyph]>,
+}
+
+impl std::fmt::Debug for LabelRun {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LabelRun")
+            .field("font_size", &self.font_size)
+            .field("glyphs", &self.glyphs.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Everything a symbol feature needs that does not depend on the live
+/// camera: the evaluated text's shaped glyph runs and the anchor in tile
+/// extent units. One is recorded per (style fingerprint, source, tile,
+/// layer, feature); a frame only projects the anchor, runs collision
+/// placement and emits the cached runs.
+struct CachedLabel {
+    /// Anchor in the tile layer's extent units.
+    anchor: (f32, f32),
+    /// The line-following angle in radians (`symbol-placement: line`).
+    angle: f64,
+    /// `text-offset`, already scaled by the text size.
+    offset: (f64, f64),
+    /// `text-anchor` alignment name.
+    text_anchor: Box<str>,
+    padding: f64,
+    color: Color,
+    halo_color: Color,
+    halo_width: f64,
+    /// Laid-out text extent in points.
+    width: f64,
+    height: f64,
+    runs: Box<[LabelRun]>,
+    byte_len: u64,
+}
+
+impl CachedLabel {
+    const fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+}
+
+impl std::fmt::Debug for CachedLabel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CachedLabel")
+            .field("anchor", &self.anchor)
+            .field("runs", &self.runs)
+            .field("byte_len", &self.byte_len)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A [`DerivedCache`] entry: the value plus the bytes it is charged for.
+#[derive(Debug)]
+struct DerivedEntry<V> {
+    value: V,
+    byte_len: u64,
+}
+
+/// LRU map of content derived from decoded tiles — recorded pictures,
+/// shaped labels, shaded terrain — byte-accounted against the same budget
 /// as the decoded tiles they were drawn from.
 ///
 /// `by_tile` reverses the key order so a decoded tile's eviction releases
-/// every picture recorded from it; `recordings` counts [`Picture::record`]
-/// calls so a test can prove a repaint or pan records only missing tiles.
+/// everything derived from it; `recordings` counts misses so a test can
+/// prove a repaint derives nothing again.
 #[derive(Debug)]
-struct PictureMap {
-    pictures: LruCache<TilePictureKey, TilePicture>,
-    by_tile: HashMap<(String, TileId), Vec<TilePictureKey>>,
+struct DerivedCache<K: Eq + std::hash::Hash + Clone + TileLocator, V> {
+    entries: LruCache<K, DerivedEntry<V>>,
+    by_tile: HashMap<(String, TileId), Vec<K>>,
     bytes: u64,
     recordings: u64,
 }
 
-impl PictureMap {
+impl<K: Eq + std::hash::Hash + Clone + TileLocator, V> DerivedCache<K, V> {
     fn new() -> Self {
         Self {
-            pictures: LruCache::unbounded(),
+            entries: LruCache::unbounded(),
             by_tile: HashMap::new(),
             bytes: 0,
             recordings: 0,
         }
     }
 
-    /// The picture for `key`, recording it through `record` on a miss.
-    fn get_or_record(
+    /// The content for `key`, deriving and byte-charging it on a miss.
+    fn get_or_insert(
         &mut self,
-        key: &TilePictureKey,
-        record: impl FnOnce() -> TilePicture,
-    ) -> &TilePicture {
-        if !self.pictures.contains(key) {
-            let picture = record();
+        key: &K,
+        byte_len: impl FnOnce(&V) -> u64,
+        derive: impl FnOnce() -> V,
+    ) -> &V {
+        if !self.entries.contains(key) {
+            let value = derive();
             self.recordings = self.recordings.saturating_add(1);
-            self.bytes = self.bytes.saturating_add(picture.byte_len);
+            let entry = DerivedEntry {
+                byte_len: byte_len(&value),
+                value,
+            };
+            self.bytes = self.bytes.saturating_add(entry.byte_len);
             self.by_tile
-                .entry((key.source.clone(), key.tile))
+                .entry(key.tile_locator())
                 .or_default()
                 .push(key.clone());
-            self.pictures.put(key.clone(), picture);
+            self.entries.put(key.clone(), entry);
         }
-        self.pictures
+        &self
+            .entries
             .get(key)
-            .expect("a tile picture the map just recorded is present")
+            .expect("content the cache just derived is present")
+            .value
     }
 
-    /// Drops the least recently used picture, returning the freed bytes.
+    /// Drops the least recently used entry, returning the freed bytes.
     fn evict_lru(&mut self) -> Option<u64> {
-        let (key, evicted) = self.pictures.pop_lru()?;
+        let (key, evicted) = self.entries.pop_lru()?;
         self.bytes = self.bytes.saturating_sub(evicted.byte_len);
-        if let Some(keys) = self.by_tile.get_mut(&(key.source.clone(), key.tile)) {
+        let locator = key.tile_locator();
+        if let Some(keys) = self.by_tile.get_mut(&locator) {
             keys.retain(|candidate| *candidate != key);
             if keys.is_empty() {
-                self.by_tile.remove(&(key.source, key.tile));
+                self.by_tile.remove(&locator);
             }
         }
         Some(evicted.byte_len)
     }
 
-    /// Drops every picture recorded from one decoded tile.
+    /// Drops everything derived from one decoded tile.
     fn release_tile(&mut self, source: &str, tile: TileId) {
         let Some(keys) = self.by_tile.remove(&(source.to_owned(), tile)) else {
             return;
         };
         for key in keys {
-            if let Some(picture) = self.pictures.pop(&key) {
-                self.bytes = self.bytes.saturating_sub(picture.byte_len);
+            if let Some(entry) = self.entries.pop(&key) {
+                self.bytes = self.bytes.saturating_sub(entry.byte_len);
             }
         }
     }
 
-    /// Drops every recorded picture. Engine replacement invalidates the
-    /// display lists the recordings belong to, so they re-record lazily.
+    /// Drops every derived entry. Recorded display lists belong to the
+    /// engine that recorded them, so engine replacement clears pictures.
     fn clear(&mut self) {
-        self.pictures.clear();
+        self.entries.clear();
         self.by_tile.clear();
         self.bytes = 0;
     }
@@ -350,7 +459,9 @@ struct TileCache {
     vector: TileMap<VectorTile>,
     raster: TileMap<RasterTile>,
     dem: TileMap<DemTile>,
-    pictures: PictureMap,
+    pictures: DerivedCache<TilePictureKey, TilePicture>,
+    labels: DerivedCache<TileFeatureKey, Option<CachedLabel>>,
+    images: DerivedCache<TilePictureKey, Arc<[u8]>>,
     maximum_bytes: u64,
 }
 
@@ -360,7 +471,9 @@ impl TileCache {
             vector: TileMap::new(),
             raster: TileMap::new(),
             dem: TileMap::new(),
-            pictures: PictureMap::new(),
+            pictures: DerivedCache::new(),
+            labels: DerivedCache::new(),
+            images: DerivedCache::new(),
             maximum_bytes,
         }
     }
@@ -371,14 +484,17 @@ impl TileCache {
             .saturating_add(self.raster.bytes)
             .saturating_add(self.dem.bytes)
             .saturating_add(self.pictures.bytes)
+            .saturating_add(self.labels.bytes)
+            .saturating_add(self.images.bytes)
     }
 
-    /// Evicts across the payload caches and the tile pictures until the
-    /// shared budget holds.
+    /// Evicts across the payload caches and the derived-content caches until
+    /// the shared budget holds.
     ///
     /// Each round drops the least recently used entry from the currently
     /// largest store, so one payload kind cannot starve the others. A vector
-    /// tile leaving the cache releases the pictures recorded from it.
+    /// tile leaving the cache releases the pictures and labels recorded from
+    /// it; a DEM tile leaving releases its shaded images.
     fn enforce_budget(&mut self) {
         while self.bytes() > self.maximum_bytes {
             let largest = self
@@ -386,11 +502,14 @@ impl TileCache {
                 .bytes
                 .max(self.raster.bytes)
                 .max(self.dem.bytes)
-                .max(self.pictures.bytes);
+                .max(self.pictures.bytes)
+                .max(self.labels.bytes)
+                .max(self.images.bytes);
             let freed = if largest == self.vector.bytes {
                 let outcome = self.vector.evict_lru();
                 if let Some((freed, (source, tile))) = outcome {
                     self.pictures.release_tile(&source, tile);
+                    self.labels.release_tile(&source, tile);
                     Some(freed)
                 } else {
                     None
@@ -398,9 +517,19 @@ impl TileCache {
             } else if largest == self.raster.bytes {
                 self.raster.evict_lru().map(|(freed, _)| freed)
             } else if largest == self.dem.bytes {
-                self.dem.evict_lru().map(|(freed, _)| freed)
-            } else {
+                let outcome = self.dem.evict_lru();
+                if let Some((freed, (source, tile))) = outcome {
+                    self.images.release_tile(&source, tile);
+                    Some(freed)
+                } else {
+                    None
+                }
+            } else if largest == self.pictures.bytes {
                 self.pictures.evict_lru()
+            } else if largest == self.labels.bytes {
+                self.labels.evict_lru()
+            } else {
+                self.images.evict_lru()
             };
             if freed.is_none() {
                 break;
@@ -555,8 +684,12 @@ pub struct PreparedMap {
     painter: MapPainter,
     /// Registrations the per-frame overlay painting names.
     registrations: Registrations,
-    /// The shared decoded-tile cache; its [`PictureMap`] holds the recorded
-    /// tile pictures this map replays, byte-budgeted against decoded tiles.
+    /// Viewport-bound layers recorded once for `camera` — `heatmap` — keyed
+    /// by style layer index and replayed under [`camera_transform`].
+    recorded: BTreeMap<usize, RecordedLayer>,
+    /// The shared decoded-tile cache; its [`DerivedCache`]s hold the tile
+    /// pictures, shaped labels and shaded images this map replays,
+    /// byte-budgeted against decoded tiles.
     cache: Rc<RefCell<TileCache>>,
 }
 
@@ -667,6 +800,7 @@ impl PreparedMap {
             },
             painter: MapPainter::default(),
             registrations: Registrations::default(),
+            recorded: BTreeMap::new(),
             cache,
         })
     }
@@ -704,13 +838,35 @@ impl SceneContent for PreparedMap {
         false
     }
 
-    // Every `Registered` handle in `registrations` and every recorded tile
-    // picture belongs to the engine that minted them; the next `build_scene`
-    // re-records lazily and re-registers what it names. Style, camera,
-    // tiles, annotations and the painter are source and stay.
+    // Every `Registered` handle in `registrations` and the recorded layers'
+    // and every recorded tile picture belongs to the engine that minted
+    // them; the next `build_scene` re-records lazily and re-registers what
+    // it names. Style, camera, tiles, annotations and the painter are
+    // source and stay.
     fn rebuild_for_engine(&mut self) {
         self.registrations = Registrations::default();
+        self.recorded.clear();
         self.cache.borrow_mut().pictures.clear();
+    }
+}
+
+/// A viewport-bound layer recorded once for the prepared camera — today
+/// `heatmap`, whose CPU density field must not accumulate every frame — and
+/// replayed under [`camera_transform`] for the live camera until the next
+/// `PreparedMap` or engine rebuild.
+///
+/// The recorded [`Picture`] names its image through `_registrations`, held
+/// for exactly the picture's lifetime (the old frozen-base contract).
+struct RecordedLayer {
+    picture: Picture,
+    _registrations: Registrations,
+}
+
+impl std::fmt::Debug for RecordedLayer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecordedLayer")
+            .finish_non_exhaustive()
     }
 }
 
@@ -719,8 +875,10 @@ impl PreparedMap {
     ///
     /// Vector tile content replays from the shared tile-picture cache — one
     /// [`Picture`] per (source tile, style layer) recorded in tile-local
-    /// space and transformed by [`Camera::tile_transform`] — while the
-    /// viewport-bound layers (symbol labels, heatmap) paint live.
+    /// space and transformed by [`Camera::tile_transform`]. Symbol labels
+    /// replay their cached glyph runs after per-frame collision placement,
+    /// and `heatmap` replays the picture recorded for `self.camera` under
+    /// [`camera_transform`].
     fn append_base_scene_for_camera(
         &mut self,
         scene: &mut impl ReplayDraw,
@@ -730,13 +888,36 @@ impl PreparedMap {
         self.painter.paint_base(
             scene,
             &self.style,
+            self.camera,
             camera,
             &self.tiles,
             &mut self.cache.borrow_mut(),
+            &mut self.recorded,
             &mut self.registrations,
             resources,
         );
     }
+}
+
+/// The affine mapping screen space under `source` to screen space under
+/// `target`: scale by the zoom difference around the shared region center.
+/// Returns `None` when the cameras coincide (the replay applies the
+/// identity).
+fn camera_transform(source: Camera, target: Camera) -> Option<Affine> {
+    if source.region == target.region && source.viewport == target.viewport {
+        return None;
+    }
+    let scale = (target.zoom - source.zoom).exp2();
+    let source_center = source.coordinate_point(source.region.center);
+    let target_source_center = target.coordinate_point(source.region.center);
+    Some(Affine::new([
+        scale,
+        0.0,
+        0.0,
+        scale,
+        scale.mul_add(-source_center.0, target_source_center.0),
+        scale.mul_add(-source_center.1, target_source_center.1),
+    ]))
 }
 
 #[allow(
@@ -1630,16 +1811,19 @@ impl MapPainter {
     /// [`TilePicture`] per (tile, layer) in tile order — the granularity that
     /// keeps style layer L of every tile ahead of layer L+1 of any tile.
     /// `symbol` labels instead place globally each frame so collision
-    /// detection spans tile boundaries, and `heatmap`, `raster` and
-    /// `hillshade` keep painting live.
+    /// detection spans tile boundaries, though their shaping replays from the
+    /// tile cache; `heatmap` replays the layer recorded for `record_camera`;
+    /// `raster` and `hillshade` keep painting live.
     #[expect(clippy::too_many_arguments, reason = "explicit render state")]
     fn paint_base(
         &mut self,
         scene: &mut impl ReplayDraw,
         style: &MapStyle,
+        record_camera: Camera,
         camera: Camera,
         tiles: &SourceTiles,
         cache: &mut TileCache,
+        recorded: &mut BTreeMap<usize, RecordedLayer>,
         registrations: &mut Registrations,
         resources: &mut RecordingResources<'_>,
     ) {
@@ -1657,7 +1841,7 @@ impl MapPainter {
                 | LayerKind::Circle => {
                     Self::paint_tile_layer(
                         scene,
-                        style.revision,
+                        style.fingerprint,
                         index,
                         layer,
                         camera,
@@ -1668,30 +1852,56 @@ impl MapPainter {
                 LayerKind::Symbol => {
                     self.paint_symbol_layer(
                         scene,
+                        style,
+                        index,
                         layer,
                         camera,
                         tiles,
                         render_bounds,
+                        cache,
                         registrations,
                         resources,
                     );
                 }
                 LayerKind::Heatmap => {
-                    Self::paint_heatmap(
-                        scene,
-                        layer,
-                        camera,
-                        tiles,
-                        render_bounds,
-                        registrations,
-                        resources,
+                    let entry = recorded.entry(index).or_insert_with(|| {
+                        let mut registrations = Registrations::default();
+                        let picture = Picture::record(|frozen| {
+                            Self::paint_heatmap(
+                                frozen,
+                                layer,
+                                record_camera,
+                                tiles,
+                                camera_render_bounds(record_camera),
+                                &mut registrations,
+                                resources,
+                            );
+                        });
+                        RecordedLayer {
+                            picture,
+                            _registrations: registrations,
+                        }
+                    });
+                    scene.picture(
+                        &entry.picture,
+                        Fixed(camera_transform(record_camera, camera).unwrap_or(Affine::IDENTITY)),
                     );
                 }
                 LayerKind::Raster => {
                     Self::paint_raster(scene, layer, camera, tiles, registrations, resources);
                 }
                 LayerKind::Hillshade => {
-                    Self::paint_hillshade(scene, layer, camera, tiles, registrations, resources);
+                    Self::paint_hillshade(
+                        scene,
+                        style,
+                        index,
+                        layer,
+                        camera,
+                        tiles,
+                        cache,
+                        registrations,
+                        resources,
+                    );
                 }
                 // `sky` only has a visible extent once the camera can pitch away
                 // from straight-down. This camera is always top-down, so the
@@ -1708,7 +1918,7 @@ impl MapPainter {
     /// picture on first use.
     fn paint_tile_layer(
         scene: &mut impl ReplayDraw,
-        revision: u64,
+        fingerprint: u64,
         index: usize,
         layer: &StyleLayer,
         camera: Camera,
@@ -1729,27 +1939,36 @@ impl MapPainter {
             .unwrap_or_else(|| panic!("vector source {source_name} was not prepared"));
         for tile in source_tiles {
             let key = TilePictureKey {
-                revision,
+                fingerprint,
                 source: source_name.clone(),
                 tile: tile.id,
                 layer: index,
             };
-            let picture = cache.pictures.get_or_record(&key, || {
-                record_tile_layer(layer, camera, tile, source_layer)
-            });
+            let picture = cache.pictures.get_or_insert(
+                &key,
+                |picture| picture.byte_len,
+                || record_tile_layer(layer, camera, tile, source_layer),
+            );
             scene.picture(&picture.picture, Fixed(camera.tile_transform(tile.id)));
         }
     }
 
-    /// Paints a `symbol` layer's labels directly: collision placement is a
-    /// viewport-wide problem, so nothing about it can live in a tile picture.
+    /// Paints a `symbol` layer's labels. Collision placement stays global and
+    /// per frame — it is a viewport-wide problem — but everything that does
+    /// not depend on the live camera (evaluated text, shaped glyph runs, the
+    /// anchor in extent units) replays from the tile cache, shaped at most
+    /// once per (style fingerprint, source, tile, layer, feature).
+    #[expect(clippy::too_many_arguments, reason = "explicit render state")]
     fn paint_symbol_layer(
         &mut self,
         scene: &mut impl ReplayDraw,
+        style: &MapStyle,
+        index: usize,
         layer: &StyleLayer,
         camera: Camera,
         tiles: &SourceTiles,
         render_bounds: Rect,
+        cache: &mut TileCache,
         registrations: &mut Registrations,
         resources: &mut RecordingResources<'_>,
     ) {
@@ -1769,7 +1988,7 @@ impl MapPainter {
             let Some(tile_layer) = tile.layers.get(source_layer) else {
                 continue;
             };
-            for feature in &tile_layer.features {
+            for (feature_index, feature) in tile_layer.features.iter().enumerate() {
                 if !feature_visible(
                     camera,
                     tile.id,
@@ -1779,24 +1998,27 @@ impl MapPainter {
                 ) {
                     continue;
                 }
-                let context = EvaluationContext::new()
-                    .with_zoom(camera.zoom)
-                    .with_feature(feature.style.clone());
-                if !passes_filter(layer, &context) {
+                let key = TileFeatureKey {
+                    fingerprint: style.fingerprint,
+                    source: source_name.clone(),
+                    tile: tile.id,
+                    layer: index,
+                    feature: feature_index,
+                };
+                let label = cache.labels.get_or_insert(
+                    &key,
+                    |label| label.as_ref().map_or(0, CachedLabel::byte_len),
+                    || self.shape_label(layer, camera, feature),
+                );
+                let Some(label) = label else {
+                    continue;
+                };
+                let (x, y) =
+                    camera.tile_point(tile.id, tile_layer.extent, label.anchor.0, label.anchor.1);
+                if !render_bounds.contains((x, y)) {
                     continue;
                 }
-                self.paint_symbol(
-                    scene,
-                    layer,
-                    &context,
-                    camera,
-                    tile.id,
-                    tile_layer.extent,
-                    feature,
-                    render_bounds,
-                    registrations,
-                    resources,
-                );
+                self.emit_label(scene, label, (x, y), registrations, resources);
             }
         }
     }
@@ -1957,11 +2179,20 @@ impl MapPainter {
     /// Draws a `hillshade` layer by shading each DEM tile on the CPU and
     /// blitting the result, which keeps terrain on the same image path as
     /// `raster` instead of introducing a second sampling mechanism.
+    ///
+    /// The shaded pixels are CPU work, so they cache per (style fingerprint,
+    /// source, tile, layer) like a tile picture; holding one `Arc` per tile
+    /// also means [`Registrations::image`] hits its existing registration
+    /// instead of re-uploading every frame.
+    #[expect(clippy::too_many_arguments, reason = "explicit render state")]
     fn paint_hillshade(
         scene: &mut impl ReplayDraw,
+        style: &MapStyle,
+        index: usize,
         layer: &StyleLayer,
         camera: Camera,
         tiles: &SourceTiles,
+        cache: &mut TileCache,
         registrations: &mut Registrations,
         resources: &mut RecordingResources<'_>,
     ) {
@@ -1984,14 +2215,26 @@ impl MapPainter {
             .get(source_name)
             .unwrap_or_else(|| panic!("raster-dem source {source_name} was not prepared"));
         for tile in source_tiles {
-            let shaded = Arc::<[u8]>::from(shade_dem_tile(
-                tile,
-                camera,
-                exaggeration,
-                shadow,
-                highlight,
-            ));
-            let Some(image) = registrations.image(&shaded, tile.width, tile.height, resources)
+            let key = TilePictureKey {
+                fingerprint: style.fingerprint,
+                source: source_name.clone(),
+                tile: tile.id,
+                layer: index,
+            };
+            let pixels = cache.images.get_or_insert(
+                &key,
+                |pixels| tile_bytes(pixels.len()),
+                || {
+                    Arc::<[u8]>::from(shade_dem_tile(
+                        tile,
+                        camera,
+                        exaggeration,
+                        shadow,
+                        highlight,
+                    ))
+                },
+            );
+            let Some(image) = registrations.image(pixels, tile.width, tile.height, resources)
             else {
                 continue;
             };
@@ -2115,61 +2358,172 @@ impl MapPainter {
         fill_viewport(scene, camera.viewport, color);
     }
 
-    #[expect(clippy::too_many_arguments, reason = "explicit render state")]
-    fn paint_symbol(
+    /// The camera-independent half of label painting, run at most once per
+    /// feature: evaluate the feature's text properties, anchor it in extent
+    /// units and shape the glyph runs. The result caches in the tile cache
+    /// and a frame only calls [`Self::emit_label`] on it.
+    fn shape_label(
+        &mut self,
+        layer: &StyleLayer,
+        camera: Camera,
+        feature: &TileFeature,
+    ) -> Option<CachedLabel> {
+        let context = EvaluationContext::new()
+            .with_zoom(camera.zoom)
+            .with_feature(feature.style.clone());
+        if !passes_filter(layer, &context) {
+            return None;
+        }
+        let text = property_string(layer, "text-field", &context)?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        let placement =
+            property_string(layer, "symbol-placement", &context).unwrap_or_else(|| "point".into());
+        let (anchor_x, anchor_y, angle) = feature_label_anchor(&feature.geometry, &placement)?;
+        let size = property_number(layer, "text-size", &context).unwrap_or(12.0) as f32;
+        let color = property_color(layer, "text-color", &context)
+            .unwrap_or(Color::new([0.2, 0.2, 0.2, 1.0]));
+        let halo_color = property_color(layer, "text-halo-color", &context)
+            .unwrap_or(Color::new([1.0, 1.0, 1.0, 0.85]));
+        let halo_width = property_number(layer, "text-halo-width", &context).unwrap_or(0.0);
+        let padding = property_number(layer, "text-padding", &context).unwrap_or(2.0);
+        let text_anchor =
+            property_string(layer, "text-anchor", &context).unwrap_or_else(|| "center".into());
+        let offset = property_number_pair(layer, "text-offset", &context).unwrap_or((0.0, 0.0));
+
+        let mut builder = self
+            .layouts
+            .ranged_builder(&mut self.fonts, &text, 1.0, true);
+        builder.push_default(StyleProperty::FontSize(size));
+        builder.push_default(StyleProperty::FontFamily(
+            parley::style::GenericFamily::SansSerif.into(),
+        ));
+        let mut layout = builder.build(&text);
+        layout.break_all_lines(None);
+        let (width, height) = (f64::from(layout.width()), f64::from(layout.height()));
+        let mut runs = Vec::new();
+        for line in layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let run = glyph_run.run();
+                runs.push(LabelRun {
+                    font: run.font().clone(),
+                    font_size: run.font_size(),
+                    coords: Arc::<[i16]>::from(run.normalized_coords()),
+                    glyphs: glyphs(&glyph_run),
+                });
+            }
+        }
+        if runs.is_empty() {
+            return None;
+        }
+        let byte_len = tile_bytes(
+            text.len()
+                + runs
+                    .iter()
+                    .map(|run| {
+                        run.glyphs.len() * size_of::<Glyph>()
+                            + run.coords.len() * size_of::<i16>()
+                            + 64
+                    })
+                    .sum::<usize>()
+                + 256,
+        );
+        Some(CachedLabel {
+            anchor: (anchor_x, anchor_y),
+            angle,
+            offset: (offset.0 * f64::from(size), offset.1 * f64::from(size)),
+            text_anchor: text_anchor.into(),
+            padding,
+            color,
+            halo_color,
+            halo_width,
+            width,
+            height,
+            runs: runs.into(),
+            byte_len,
+        })
+    }
+
+    /// The per-frame half of label painting: run collision against
+    /// `occupied_labels` at the already-projected position and emit the
+    /// cached runs under the label transform.
+    fn emit_label(
         &mut self,
         scene: &mut impl ReplayDraw,
-        layer: &StyleLayer,
-        context: &EvaluationContext,
-        camera: Camera,
-        tile: TileId,
-        extent: u32,
-        feature: &TileFeature,
-        render_bounds: Rect,
+        label: &CachedLabel,
+        position: (f64, f64),
         registrations: &mut Registrations,
         resources: &mut RecordingResources<'_>,
     ) {
-        let Some(text) = property_string(layer, "text-field", context) else {
-            return;
-        };
-        if text.trim().is_empty() {
-            return;
-        }
-        let placement =
-            property_string(layer, "symbol-placement", context).unwrap_or_else(|| "point".into());
-        let Some((x, y, angle)) =
-            feature_label_anchor(camera, tile, extent, &feature.geometry, &placement)
-        else {
-            return;
-        };
-        if !render_bounds.contains((x, y)) {
-            return;
-        }
-        let size = property_number(layer, "text-size", context).unwrap_or(12.0) as f32;
-        let text_color = property_color(layer, "text-color", context)
-            .unwrap_or(Color::new([0.2, 0.2, 0.2, 1.0]));
-        let halo_color = property_color(layer, "text-halo-color", context)
-            .unwrap_or(Color::new([1.0, 1.0, 1.0, 0.85]));
-        let halo_width = property_number(layer, "text-halo-width", context).unwrap_or(0.0);
-        let padding = property_number(layer, "text-padding", context).unwrap_or(2.0);
-        let anchor =
-            property_string(layer, "text-anchor", context).unwrap_or_else(|| "center".into());
-        let offset = property_number_pair(layer, "text-offset", context).unwrap_or((0.0, 0.0));
-        self.draw_label(
-            scene,
-            &text,
-            size,
-            (x, y),
-            &anchor,
-            (offset.0 * f64::from(size), offset.1 * f64::from(size)),
-            angle,
-            padding,
-            text_color,
-            halo_color,
-            halo_width,
-            registrations,
-            resources,
+        let origin = label_origin(
+            position,
+            label.offset,
+            label.width,
+            label.height,
+            &label.text_anchor,
         );
+        let rotated_width = f64::mul_add(
+            label.height,
+            label.angle.sin().abs(),
+            label.width * label.angle.cos().abs(),
+        );
+        let rotated_height = f64::mul_add(
+            label.height,
+            label.angle.cos().abs(),
+            label.width * label.angle.sin().abs(),
+        );
+        let center = (
+            f64::mul_add(label.width, 0.5, origin.0),
+            f64::mul_add(label.height, 0.5, origin.1),
+        );
+        let bounds = Rect::new(
+            rotated_width.mul_add(-0.5, center.0) - label.padding,
+            rotated_height.mul_add(-0.5, center.1) - label.padding,
+            rotated_width.mul_add(0.5, center.0) + label.padding,
+            rotated_height.mul_add(0.5, center.1) + label.padding,
+        );
+        if self
+            .occupied_labels
+            .iter()
+            .any(|occupied| occupied.overlaps(bounds))
+        {
+            return;
+        }
+        self.occupied_labels.push(bounds);
+        let transform = Affine::translate(center)
+            * Affine::rotate(label.angle)
+            * Affine::translate((-label.width * 0.5, -label.height * 0.5));
+        let halo_stroke = Stroke::new(label.halo_width * 2.0);
+        for run in &label.runs {
+            let Some(font) = registrations.font(&run.font, resources) else {
+                continue;
+            };
+            let run_of = |style: GlyphStyle| GlyphRun {
+                font,
+                size: run.font_size,
+                coords: Arc::clone(&run.coords),
+                glyphs: Arc::clone(&run.glyphs),
+                style,
+            };
+            // The halo is the same run painted underneath as a thick
+            // stroke, so the fill that follows reads against any basemap.
+            scene.transform(Fixed(transform), |scene| {
+                if label.halo_width > 0.0 {
+                    scene.glyphs(
+                        Fixed(run_of(GlyphStyle::Stroke(halo_stroke.clone()))),
+                        Fixed(Paint::from(label.halo_color)),
+                    );
+                }
+                scene.glyphs(
+                    Fixed(run_of(GlyphStyle::Fill)),
+                    Fixed(Paint::from(label.color)),
+                );
+            });
+        }
     }
 
     #[expect(
@@ -3293,58 +3647,41 @@ fn add_line(path: &mut BezPath, line: &LineString<f32>, scale: f64, close: bool)
     }
 }
 
-fn feature_label_anchor(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    geometry: &Geometry<f32>,
-    placement: &str,
-) -> Option<(f64, f64, f64)> {
+/// The label anchor in the tile layer's extent units: the feature's point,
+/// a line's midpoint (plus its angle for `symbol-placement: line`), or a
+/// polygon's centroid. Camera-independent, so it caches with the shaped
+/// label and projects once per frame via [`Camera::tile_point`].
+fn feature_label_anchor(geometry: &Geometry<f32>, placement: &str) -> Option<(f32, f32, f64)> {
     let line_placement = match placement {
         "point" => false,
         "line" | "line-center" => true,
         other => panic!("unsupported MapLibre symbol-placement {other}"),
     };
     match geometry {
-        Geometry::Point(point) => {
-            let (x, y) = camera.tile_point(tile, extent, point.x(), point.y());
-            Some((x, y, 0.0))
+        Geometry::Point(point) => Some((point.x(), point.y(), 0.0)),
+        Geometry::MultiPoint(points) => points.0.first().map(|point| (point.x(), point.y(), 0.0)),
+        Geometry::LineString(line) => line_label_anchor(line, line_placement),
+        Geometry::MultiLineString(lines) => {
+            longest_line(&lines.0).and_then(|line| line_label_anchor(line, line_placement))
         }
-        Geometry::MultiPoint(points) => points
-            .0
-            .first()
-            .map(|point| camera.tile_point(tile, extent, point.x(), point.y()))
-            .map(|(x, y)| (x, y, 0.0)),
-        Geometry::LineString(line) => line_label_anchor(camera, tile, extent, line, line_placement),
-        Geometry::MultiLineString(lines) => longest_line(&lines.0)
-            .and_then(|line| line_label_anchor(camera, tile, extent, line, line_placement)),
-        Geometry::Polygon(polygon) => {
-            polygon_anchor(camera, tile, extent, polygon).map(|(x, y)| (x, y, 0.0))
-        }
+        Geometry::Polygon(polygon) => polygon_anchor(polygon).map(|(x, y)| (x, y, 0.0)),
         Geometry::MultiPolygon(polygons) => largest_polygon(&polygons.0)
-            .and_then(|polygon| polygon_anchor(camera, tile, extent, polygon))
+            .and_then(polygon_anchor)
             .map(|(x, y)| (x, y, 0.0)),
         _ => None,
     }
 }
 
+/// The midpoint of `line` in extent units, plus the segment's angle when
+/// `rotate` asks for line-following text.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the normalized segment fraction is bounded to zero through one before MVT f32 interpolation"
 )]
-fn line_label_anchor(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    line: &LineString<f32>,
-    rotate: bool,
-) -> Option<(f64, f64, f64)> {
+fn line_label_anchor(line: &LineString<f32>, rotate: bool) -> Option<(f32, f32, f64)> {
     let points = &line.0;
     if points.len() < 2 {
-        return points
-            .first()
-            .map(|point| camera.tile_point(tile, extent, point.x, point.y))
-            .map(|(x, y)| (x, y, 0.0));
+        return points.first().map(|point| (point.x, point.y, 0.0));
     }
     let total = points
         .windows(2)
@@ -3356,16 +3693,14 @@ fn line_label_anchor(
         let length = segment_length(pair[0], pair[1]);
         if traversed + length >= target {
             let t = ((target - traversed) / length.max(f64::EPSILON)) as f32;
-            let anchor = camera.tile_point(
-                tile,
-                extent,
+            let anchor = (
                 (pair[1].x - pair[0].x).mul_add(t, pair[0].x),
                 (pair[1].y - pair[0].y).mul_add(t, pair[0].y),
             );
-            let start = camera.tile_point(tile, extent, pair[0].x, pair[0].y);
-            let end = camera.tile_point(tile, extent, pair[1].x, pair[1].y);
+            // The angle survives extent space unchanged: the projection to
+            // the screen is a uniform scale plus translation.
             let mut angle = if rotate {
-                (end.1 - start.1).atan2(end.0 - start.0)
+                f64::from(pair[1].y - pair[0].y).atan2(f64::from(pair[1].x - pair[0].x))
             } else {
                 0.0
             };
@@ -3381,16 +3716,12 @@ fn line_label_anchor(
     None
 }
 
+/// The polygon's centroid in extent units.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "MVT polygon coordinates are f32 and the centroid average remains in the same bounded tile extent"
 )]
-fn polygon_anchor(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    polygon: &Polygon<f32>,
-) -> Option<(f64, f64)> {
+fn polygon_anchor(polygon: &Polygon<f32>) -> Option<(f32, f32)> {
     let points = &polygon.exterior().0;
     if points.is_empty() {
         return None;
@@ -3401,7 +3732,7 @@ fn polygon_anchor(
     let count = f64::from(
         u32::try_from(points.len()).expect("an MVT polygon point count must fit into u32"),
     );
-    Some(camera.tile_point(tile, extent, (sum_x / count) as f32, (sum_y / count) as f32))
+    Some(((sum_x / count) as f32, (sum_y / count) as f32))
 }
 
 fn longest_line(lines: &[LineString<f32>]) -> Option<&LineString<f32>> {
@@ -3751,7 +4082,7 @@ mod tests {
         let style = MapStyle {
             sources: BTreeMap::new(),
             layers: Vec::new(),
-            revision: 0,
+            fingerprint: 0,
         };
         let prepared = PreparedMap {
             chrome: MapChrome {
@@ -3765,6 +4096,7 @@ mod tests {
             location: None,
             painter: MapPainter::default(),
             registrations: Registrations::default(),
+            recorded: BTreeMap::new(),
             cache: Rc::new(RefCell::new(TileCache::new(1_000_000))),
         };
         let config = MapConfig {
@@ -3872,15 +4204,20 @@ mod tests {
             properties: BTreeMap::new(),
             visible: true,
         };
+        let mut names = layer("names", LayerKind::Symbol, "place");
+        names.properties.insert(
+            String::from("text-field"),
+            maplibre_expr::Expr::Literal(maplibre_expr::Value::String(String::from("place"))),
+        );
         MapStyle {
             sources,
             layers: vec![
                 layer("land", LayerKind::Fill, "landcover"),
                 layer("roads", LayerKind::Line, "transportation"),
                 layer("dots", LayerKind::Circle, "poi"),
-                layer("names", LayerKind::Symbol, "place"),
+                names,
             ],
-            revision: 7,
+            fingerprint: 7,
         }
     }
 
@@ -3953,6 +4290,23 @@ mod tests {
                 )))],
             },
         );
+        // `place` spans the whole tile extent so its bounding box overlaps
+        // whatever part of the tile is visible and each feature is shaped.
+        layers.insert(
+            String::from("place"),
+            crate::tile::TileLayer {
+                extent: 4_096,
+                features: (0..count)
+                    .map(|index| {
+                        let offset = index as f32 * 200.0;
+                        features(Geometry::LineString(LineString::from(vec![
+                            (0.0, offset),
+                            (4_096.0, offset + 4_096.0),
+                        ])))
+                    })
+                    .collect(),
+            },
+        );
         Arc::new(VectorTile {
             id,
             layers,
@@ -3986,6 +4340,7 @@ mod tests {
             },
             painter: MapPainter::default(),
             registrations: Registrations::default(),
+            recorded: BTreeMap::new(),
             cache: Rc::clone(cache),
         }
     }
@@ -4024,8 +4379,8 @@ mod tests {
         renderer
             .render(&mut prepared, size, 1.0)
             .expect("first frame must render");
-        // 2 tiles × 3 recorded layer kinds (fill, line, circle); symbols are
-        // global and record nothing.
+        // 2 tiles × 3 recorded layer kinds (fill, line, circle); symbols
+        // shape into the label cache, never the picture cache.
         assert_eq!(cache.borrow().pictures.recordings, 6);
         let after_first = cache.borrow().pictures.recordings;
 
@@ -4068,6 +4423,53 @@ mod tests {
         );
     }
 
+    /// A repaint under a camera moved within the same tiles must only
+    /// project the cached anchors and re-run collision placement: no feature
+    /// is evaluated or shaped twice.
+    #[test]
+    fn repainting_within_tiles_does_not_reshape_labels() {
+        let renderer = OffscreenRenderer::<Raster>::cpu().expect("a CPU engine");
+        let size = OffscreenSize::try_from_pixels(800, 600).expect("non-zero size");
+        let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
+        let style = fixture_style();
+        let region = manhattan_region(0.030, 0.050);
+        let camera = Camera::new(
+            region,
+            Viewport {
+                width: 800,
+                height: 600,
+            },
+            0,
+            22,
+        );
+        let tile_id = camera.visible_tiles(0.0, 0, 22, TILE_SIZE)[0];
+        let tiles = vec![fixture_tile(tile_id, 3)];
+        let mut prepared = fixture_prepared(region, &style, tiles, &cache);
+        renderer
+            .render(&mut prepared, size, 1.0)
+            .expect("the first frame must render");
+        let recordings = cache.borrow().labels.recordings;
+        assert!(
+            recordings > 0,
+            "the first frame shapes each visible symbol feature once"
+        );
+
+        prepared.camera = Camera::new(
+            manhattan_region(0.031, 0.051),
+            prepared.camera.viewport,
+            0,
+            22,
+        );
+        renderer
+            .render(&mut prepared, size, 1.0)
+            .expect("the moved-camera repaint must render");
+        assert_eq!(
+            cache.borrow().labels.recordings,
+            recordings,
+            "a repaint within the same tiles projects cached labels and shapes nothing"
+        );
+    }
+
     /// No batched path may outgrow a single tile's content: batching stops
     /// at the tile boundary, so the largest path a frame produces is bounded
     /// by the densest tile, not by the viewport.
@@ -4105,9 +4507,9 @@ mod tests {
         let cache = cache.borrow();
         let largest = cache
             .pictures
-            .pictures
+            .entries
             .iter()
-            .map(|(_, picture)| picture.max_path_elements)
+            .map(|(_, entry)| entry.value.max_path_elements)
             .max()
             .expect("the fixture records batched layers");
         // One clipped triangle line string is move+2×line elements; the

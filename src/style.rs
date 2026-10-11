@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::future::join_all;
 use maplibre_expr::{Expr, Type, parse, typecheck};
@@ -159,19 +158,24 @@ impl StyleLayer {
     }
 }
 
-/// Monotonic identifier of one loaded style. Tile pictures are keyed by it,
-/// so a style reload never replays content recorded under another style.
+/// Deterministic identifier of one loaded style, hashed from the style
+/// document's bytes at load. Tile pictures and labels are keyed by it, so a
+/// style reload never replays content recorded under another document.
 #[derive(Debug, Clone)]
 pub struct MapStyle {
     pub sources: BTreeMap<String, TileSource>,
     pub layers: Vec<StyleLayer>,
-    pub revision: u64,
+    pub fingerprint: u64,
 }
 
-static NEXT_STYLE_REVISION: AtomicU64 = AtomicU64::new(1);
-
-fn next_style_revision() -> u64 {
-    NEXT_STYLE_REVISION.fetch_add(1, Ordering::Relaxed)
+/// FNV-1a over the raw style document: the fingerprint is a property of the
+/// bytes, not of process state, so equal documents share derived content.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for &byte in bytes {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 impl MapStyle {
@@ -196,6 +200,7 @@ impl MapStyle {
         )
         .await?;
         let style_url_text = style_url.to_string();
+        let document_fingerprint = fingerprint(&bytes);
         let raw: RawStyle = unblock(move || parse_json(style_url_text, &bytes)).await?;
         if raw.version != 8 {
             return Err(MapLoadError::Unsupported(format!(
@@ -232,7 +237,7 @@ impl MapStyle {
         let style = Self {
             sources,
             layers,
-            revision: next_style_revision(),
+            fingerprint: document_fingerprint,
         };
         style.validate_layer_sources()?;
         Ok(style)
@@ -546,7 +551,7 @@ mod tests {
         let style = MapStyle {
             sources: BTreeMap::from([(String::from("basemap"), source(SourceKind::Vector))]),
             layers: vec![layer("satellite", LayerKind::Raster, Some("basemap"))],
-            revision: 0,
+            fingerprint: 0,
         };
 
         let error = style
@@ -564,7 +569,7 @@ mod tests {
         let style = MapStyle {
             sources: BTreeMap::new(),
             layers: vec![layer("roads", LayerKind::Line, Some("missing"))],
-            revision: 0,
+            fingerprint: 0,
         };
 
         assert!(style.validate_layer_sources().is_err());
@@ -578,7 +583,7 @@ mod tests {
                 layer("bg", LayerKind::Background, None),
                 layer("sky", LayerKind::Sky, None),
             ],
-            revision: 0,
+            fingerprint: 0,
         };
 
         assert!(style.validate_layer_sources().is_ok());
