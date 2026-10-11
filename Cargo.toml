@@ -51,6 +51,7 @@ nami = "0.12"
 native-executor = "0.8.0"
 parley = { version = "0.11", default-features = false, features = ["system"] }
 rayon = "1.12"
+rustc-hash = "2"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = "1.0"
 thiserror = "2.0.19"

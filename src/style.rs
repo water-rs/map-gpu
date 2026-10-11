@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::hash::Hasher;
 
 use futures::future::join_all;
 use maplibre_expr::{Expr, Type, parse, typecheck};
@@ -158,10 +159,22 @@ impl StyleLayer {
     }
 }
 
+/// Deterministic identifier of one loaded style, hashed from the style
+/// document's bytes at load. Tile pictures and labels are keyed by it, so a
+/// style reload never replays content recorded under another document.
 #[derive(Debug, Clone)]
 pub struct MapStyle {
     pub sources: BTreeMap<String, TileSource>,
     pub layers: Vec<StyleLayer>,
+    pub fingerprint: u64,
+}
+
+/// `FxHash` over the raw style document: the fingerprint is a property of the
+/// bytes, not of process state, so equal documents share derived content.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut hasher = rustc_hash::FxHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 impl MapStyle {
@@ -186,6 +199,7 @@ impl MapStyle {
         )
         .await?;
         let style_url_text = style_url.to_string();
+        let document_fingerprint = fingerprint(&bytes);
         let raw: RawStyle = unblock(move || parse_json(style_url_text, &bytes)).await?;
         if raw.version != 8 {
             return Err(MapLoadError::Unsupported(format!(
@@ -219,7 +233,11 @@ impl MapStyle {
                 .collect::<Result<Vec<_>, _>>()
         });
         let (sources, layers) = futures::try_join!(sources, layers)?;
-        let style = Self { sources, layers };
+        let style = Self {
+            sources,
+            layers,
+            fingerprint: document_fingerprint,
+        };
         style.validate_layer_sources()?;
         Ok(style)
     }
@@ -532,6 +550,7 @@ mod tests {
         let style = MapStyle {
             sources: BTreeMap::from([(String::from("basemap"), source(SourceKind::Vector))]),
             layers: vec![layer("satellite", LayerKind::Raster, Some("basemap"))],
+            fingerprint: 0,
         };
 
         let error = style
@@ -549,6 +568,7 @@ mod tests {
         let style = MapStyle {
             sources: BTreeMap::new(),
             layers: vec![layer("roads", LayerKind::Line, Some("missing"))],
+            fingerprint: 0,
         };
 
         assert!(style.validate_layer_sources().is_err());
@@ -562,6 +582,7 @@ mod tests {
                 layer("bg", LayerKind::Background, None),
                 layer("sky", LayerKind::Sky, None),
             ],
+            fingerprint: 0,
         };
 
         assert!(style.validate_layer_sources().is_ok());

@@ -5652,6 +5652,7 @@ dependencies = [
  "parley",
  "pollster 1.0.1",
  "rayon",
+ "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
