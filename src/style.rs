@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::hash::Hasher;
 
 use futures::future::join_all;
 use maplibre_expr::{Expr, Type, parse, typecheck};
@@ -168,14 +169,12 @@ pub struct MapStyle {
     pub fingerprint: u64,
 }
 
-/// FNV-1a over the raw style document: the fingerprint is a property of the
+/// `FxHash` over the raw style document: the fingerprint is a property of the
 /// bytes, not of process state, so equal documents share derived content.
 fn fingerprint(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for &byte in bytes {
-        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+    let mut hasher = rustc_hash::FxHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 impl MapStyle {
