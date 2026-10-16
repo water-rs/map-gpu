@@ -3820,10 +3820,11 @@ mod tests {
 
     use kurbo::{PathEl, Point};
     use num_traits::ToPrimitive as _;
+    use waterui_core::view::ConfigurableView as _;
     use waterui_graphics::cherenkov_cpu::Raster;
     use waterui_graphics::cherenkov_gpu::Gpu;
     use waterui_graphics::{OffscreenRenderer, OffscreenSize};
-    use waterui_map::{MapInteractivity, MapVisibility};
+    use waterui_map::Map;
     use waterui_url::Url;
 
     use super::*;
@@ -4033,17 +4034,12 @@ mod tests {
             width: 1_200,
             height: 800,
         };
-        let config = MapConfig {
-            region: Computed::constant(region),
-            annotations: Computed::constant(Vec::new()),
-            style: waterui_map::MapStyle::Standard,
-            user_location_visibility: MapVisibility::Hidden,
-            user_location: None,
-            interactivity: MapInteractivity::ReadOnly,
-            compass_visibility: MapVisibility::Hidden,
-            scale_visibility: MapVisibility::Hidden,
-            status: None,
-        };
+        let config = Map::new(region)
+            .style(waterui_map::MapStyle::Standard)
+            .is_interactive(false)
+            .shows_compass(false)
+            .shows_scale(false)
+            .config();
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let mut map = MapScene::new(config, options);
         {
@@ -4099,17 +4095,12 @@ mod tests {
             recorded: BTreeMap::new(),
             cache: Rc::new(RefCell::new(TileCache::new(1_000_000))),
         };
-        let config = MapConfig {
-            region: Computed::constant(region),
-            annotations: Computed::constant(Vec::new()),
-            style: waterui_map::MapStyle::Standard,
-            user_location_visibility: MapVisibility::Hidden,
-            user_location: None,
-            interactivity: MapInteractivity::ReadOnly,
-            compass_visibility: MapVisibility::Hidden,
-            scale_visibility: MapVisibility::Hidden,
-            status: None,
-        };
+        let config = Map::new(region)
+            .style(waterui_map::MapStyle::Standard)
+            .is_interactive(false)
+            .shows_compass(false)
+            .shows_scale(false)
+            .config();
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let mut map = MapScene::new(config, options);
         {
