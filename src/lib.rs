@@ -794,20 +794,17 @@ mod tests {
     /// An application that already described the map keeps its own wording.
     #[test]
     fn application_supplied_semantics_win() {
+        use waterui_core::view::ConfigurableView as _;
+
         let mut env = Environment::new();
         env.insert(AccessibilityLabel::new("City map"));
         env.insert(AccessibilityRole::Image);
-        let config = MapConfig {
-            region: Computed::constant(manhattan_region()),
-            annotations: Computed::constant(Vec::new()),
-            style: MapStyle::Standard,
-            user_location_visibility: waterui_map::MapVisibility::Hidden,
-            user_location: None,
-            interactivity: waterui_map::MapInteractivity::ReadOnly,
-            compass_visibility: waterui_map::MapVisibility::Hidden,
-            scale_visibility: waterui_map::MapVisibility::Hidden,
-            status: None,
-        };
+        let config = waterui_map::Map::new(manhattan_region())
+            .style(MapStyle::Standard)
+            .is_interactive(false)
+            .shows_compass(false)
+            .shows_scale(false)
+            .config();
 
         let semantics = map_semantics(&env, &config);
 
@@ -830,33 +827,33 @@ mod tests {
     fn drag_updates_the_internal_camera_without_replacing_the_map() {
         let controller = MapGestureController::new(&Computed::constant(manhattan_region()));
         controller.viewport.set(Some((1_000.0, 500.0)));
-        controller.handle_drag(&DragEvent {
-            phase: GesturePhase::Started,
-            location: GesturePoint::new(500.0, 250.0),
-            translation: GesturePoint::new(0.0, 0.0),
-            velocity: GesturePoint::new(0.0, 0.0),
-            button: PointerButton::Primary,
-        });
-        controller.handle_drag(&DragEvent {
-            phase: GesturePhase::Updated,
-            location: GesturePoint::new(600.0, 300.0),
-            translation: GesturePoint::new(100.0, 50.0),
-            velocity: GesturePoint::new(0.0, 0.0),
-            button: PointerButton::Primary,
-        });
+        controller.handle_drag(&DragEvent::new(
+            GesturePhase::Started,
+            GesturePoint::new(500.0, 250.0),
+            GesturePoint::new(0.0, 0.0),
+            GesturePoint::new(0.0, 0.0),
+            PointerButton::Primary,
+        ));
+        controller.handle_drag(&DragEvent::new(
+            GesturePhase::Updated,
+            GesturePoint::new(600.0, 300.0),
+            GesturePoint::new(100.0, 50.0),
+            GesturePoint::new(0.0, 0.0),
+            PointerButton::Primary,
+        ));
 
         let region = controller.region.snapshot();
         assert!((region.center.latitude.get() - 40.761).abs() < 1e-9);
         assert!((region.center.longitude.get() + 73.9905).abs() < 1e-9);
         assert_eq!(controller.settled_region.snapshot(), manhattan_region());
 
-        controller.handle_drag(&DragEvent {
-            phase: GesturePhase::Ended,
-            location: GesturePoint::new(600.0, 300.0),
-            translation: GesturePoint::new(100.0, 50.0),
-            velocity: GesturePoint::new(0.0, 0.0),
-            button: PointerButton::Primary,
-        });
+        controller.handle_drag(&DragEvent::new(
+            GesturePhase::Ended,
+            GesturePoint::new(600.0, 300.0),
+            GesturePoint::new(100.0, 50.0),
+            GesturePoint::new(0.0, 0.0),
+            PointerButton::Primary,
+        ));
         assert_eq!(
             controller.settled_region.snapshot(),
             controller.region.snapshot()
@@ -868,18 +865,18 @@ mod tests {
     fn focal_zoom_preserves_the_center_and_halves_the_span() {
         let controller = MapGestureController::new(&Computed::constant(manhattan_region()));
         controller.viewport.set(Some((1_000.0, 500.0)));
-        controller.handle_magnification(&MagnificationEvent {
-            phase: GesturePhase::Started,
-            center: GesturePoint::new(500.0, 250.0),
-            scale: 1.0,
-            velocity: 0.0,
-        });
-        controller.handle_magnification(&MagnificationEvent {
-            phase: GesturePhase::Updated,
-            center: GesturePoint::new(500.0, 250.0),
-            scale: 2.0,
-            velocity: 0.0,
-        });
+        controller.handle_magnification(&MagnificationEvent::new(
+            GesturePhase::Started,
+            GesturePoint::new(500.0, 250.0),
+            1.0,
+            0.0,
+        ));
+        controller.handle_magnification(&MagnificationEvent::new(
+            GesturePhase::Updated,
+            GesturePoint::new(500.0, 250.0),
+            2.0,
+            0.0,
+        ));
 
         let region = controller.region.snapshot();
         assert_eq!(region.center, manhattan_region().center);
@@ -891,26 +888,26 @@ mod tests {
     fn cancelled_magnification_keeps_the_last_visible_camera() {
         let controller = MapGestureController::new(&Computed::constant(manhattan_region()));
         controller.viewport.set(Some((1_000.0, 500.0)));
-        controller.handle_magnification(&MagnificationEvent {
-            phase: GesturePhase::Started,
-            center: GesturePoint::new(500.0, 250.0),
-            scale: 1.0,
-            velocity: 0.0,
-        });
-        controller.handle_magnification(&MagnificationEvent {
-            phase: GesturePhase::Updated,
-            center: GesturePoint::new(500.0, 250.0),
-            scale: 2.0,
-            velocity: 0.0,
-        });
+        controller.handle_magnification(&MagnificationEvent::new(
+            GesturePhase::Started,
+            GesturePoint::new(500.0, 250.0),
+            1.0,
+            0.0,
+        ));
+        controller.handle_magnification(&MagnificationEvent::new(
+            GesturePhase::Updated,
+            GesturePoint::new(500.0, 250.0),
+            2.0,
+            0.0,
+        ));
         let visible = controller.region.snapshot();
 
-        controller.handle_magnification(&MagnificationEvent {
-            phase: GesturePhase::Cancelled,
-            center: GesturePoint::new(500.0, 250.0),
-            scale: 2.0,
-            velocity: 0.0,
-        });
+        controller.handle_magnification(&MagnificationEvent::new(
+            GesturePhase::Cancelled,
+            GesturePoint::new(500.0, 250.0),
+            2.0,
+            0.0,
+        ));
 
         assert_eq!(controller.region.snapshot(), visible);
         assert_eq!(controller.settled_region.snapshot(), visible);
