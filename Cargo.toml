@@ -109,34 +109,34 @@ ignored = ["getrandom"]
 # `waterui_graphics::draw` and `SceneResources` registers through the
 # target's `SceneBackend` / `ShaderBackend` registry, returning handles that
 # name the plain ids.
-waterui = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-assets = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-assets-core = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-assets-macros = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-assets-planner = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-backend-core = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-controls = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-core = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-dylib = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-form = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-icon = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-internal = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-layout = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-locale = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-macros = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-map = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-media = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-navigation = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-shape = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-testing = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-text = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-url = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-video = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-watcher-set = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-waterui-webview = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
+waterui = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-core = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-form = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-map = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-media = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-testing = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-text = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-url = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-video = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", branch = "dev" }
 
 # Split components at the revisions the waterui branch's own patch table pins.
 # `hydrolysis` enters this graph only through `waterui-testing`, whose
@@ -146,12 +146,12 @@ waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b
 
 # The engine and its filter crates live in the waterui repository under
 # `graphics/` and resolve to the same commit as the rest of the graph.
-cherenkov = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-cherenkov-cpu = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-cherenkov-gpu = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-filtrate = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-filtrate-core = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
-filtrate-derive = { git = "https://github.com/water-rs/waterui", branch = "feat/2633-nami-0.13" }
+cherenkov = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+cherenkov-cpu = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+cherenkov-gpu = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+filtrate = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+filtrate-core = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+filtrate-derive = { git = "https://github.com/water-rs/waterui", branch = "dev" }
 
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki's
 # `dev` implements 0.5's (water-rs/suiteki#29), the source the framework's own
