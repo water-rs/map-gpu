@@ -551,7 +551,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 [[package]]
 name = "cherenkov"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "arc-swap",
  "cherenkov-record",
@@ -571,7 +571,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-cpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "arrayvec",
  "cherenkov",
@@ -588,7 +588,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-gpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "ash",
  "block2",
@@ -634,7 +634,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-record"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "color",
  "kurbo",
@@ -648,7 +648,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-shader"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "naga",
  "thiserror 2.0.21",
@@ -926,7 +926,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1055,7 +1055,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1171,7 +1171,7 @@ dependencies = [
 [[package]]
 name = "filtrate"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "bytemuck",
  "cherenkov-shader",
@@ -1189,7 +1189,7 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "libm",
 ]
@@ -1197,7 +1197,7 @@ dependencies = [
 [[package]]
 name = "filtrate-derive"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1589,7 +1589,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.56.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1761,7 +1761,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "accesskit",
  "android_logger",
@@ -1913,7 +1913,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.56.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -3137,7 +3137,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3631,7 +3631,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4213,7 +4213,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4269,7 +4269,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4585,7 +4585,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4785,7 +4785,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5075,7 +5075,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5443,7 +5443,7 @@ dependencies = [
 [[package]]
 name = "waterui"
 version = "0.5.2"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "waterui-dylib",
  "waterui-internal",
@@ -5452,7 +5452,7 @@ dependencies = [
 [[package]]
 name = "waterui-assets"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "blocking",
  "memmap2",
@@ -5464,7 +5464,7 @@ dependencies = [
 [[package]]
 name = "waterui-assets-core"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "blocking",
  "tempfile",
@@ -5474,7 +5474,7 @@ dependencies = [
 [[package]]
 name = "waterui-assets-macros"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5487,7 +5487,7 @@ dependencies = [
 [[package]]
 name = "waterui-assets-planner"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "cargo_metadata",
  "heck",
@@ -5503,7 +5503,7 @@ dependencies = [
 [[package]]
 name = "waterui-backend-core"
 version = "0.5.2"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "kurbo",
  "nami",
@@ -5522,7 +5522,7 @@ dependencies = [
 [[package]]
 name = "waterui-controls"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "executor-core",
  "nami",
@@ -5539,7 +5539,7 @@ dependencies = [
 [[package]]
 name = "waterui-core"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -5555,7 +5555,7 @@ dependencies = [
 [[package]]
 name = "waterui-dylib"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "waterui-internal",
 ]
@@ -5563,7 +5563,7 @@ dependencies = [
 [[package]]
 name = "waterui-form"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "getrandom 0.4.3",
  "jiff",
@@ -5585,7 +5585,7 @@ dependencies = [
 [[package]]
 name = "waterui-graphics"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "arc-swap",
  "bytemuck",
@@ -5612,7 +5612,7 @@ dependencies = [
 [[package]]
 name = "waterui-icon"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "suiteki",
  "waterui-core",
@@ -5623,7 +5623,7 @@ dependencies = [
 [[package]]
 name = "waterui-inspector-protocol"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "bincode 2.0.1",
  "bitflags 2.13.2",
@@ -5638,7 +5638,7 @@ dependencies = [
 [[package]]
 name = "waterui-internal"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "async-channel",
  "cpu-time",
@@ -5674,7 +5674,7 @@ dependencies = [
 [[package]]
 name = "waterui-layout"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "nami",
  "num-traits",
@@ -5686,7 +5686,7 @@ dependencies = [
 [[package]]
 name = "waterui-locale"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "fixed_decimal",
  "iana-time-zone",
@@ -5714,7 +5714,7 @@ dependencies = [
 [[package]]
 name = "waterui-macros"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "icu_locale_core",
  "proc-macro-crate",
@@ -5728,7 +5728,7 @@ dependencies = [
 [[package]]
 name = "waterui-map"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "nami",
  "suiteki",
@@ -5777,12 +5777,12 @@ dependencies = [
 [[package]]
 name = "waterui-meta"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 
 [[package]]
 name = "waterui-navigation"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "nami",
  "waterui-controls",
@@ -5796,7 +5796,7 @@ dependencies = [
 [[package]]
 name = "waterui-preview-protocol"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "image",
  "serde",
@@ -5807,7 +5807,7 @@ dependencies = [
 [[package]]
 name = "waterui-shape"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "executor-core",
  "nami",
@@ -5835,7 +5835,7 @@ dependencies = [
 [[package]]
 name = "waterui-testing"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "accesskit",
  "cargo_metadata",
@@ -5857,7 +5857,7 @@ dependencies = [
 [[package]]
 name = "waterui-text"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "nami",
  "parley",
@@ -5877,7 +5877,7 @@ dependencies = [
 [[package]]
 name = "waterui-url"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "base64 0.23.1",
  "nami-core",
@@ -5887,12 +5887,12 @@ dependencies = [
 [[package]]
 name = "waterui-watcher-set"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 
 [[package]]
 name = "waterui-webview"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 dependencies = [
  "base64 0.23.1",
  "cookie",
@@ -6215,7 +6215,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7071,12 +7071,12 @@ source = "git+https://github.com/water-rs/image?rev=a36e16c555bd78ade9e28fad947a
 [[patch.unused]]
 name = "waterui-media"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 
 [[patch.unused]]
 name = "waterui-video"
 version = "0.5.1"
-source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#1d600a55c2cfdff43a640f368b344e7ddc286a83"
+source = "git+https://github.com/water-rs/waterui?branch=feat%2F2633-nami-0.13#5ca75bacb1bde43b8c5870d575254382baec11da"
 
 [[patch.unused]]
 name = "wgpu-core-deps-wasm"
