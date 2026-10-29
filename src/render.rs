@@ -1373,8 +1373,8 @@ impl std::fmt::Debug for MapScene {
 impl MapScene {
     /// Creates live scene content from the semantic map configuration.
     #[must_use]
-    pub fn new(config: MapConfig, options: MapGpuOptions) -> Self {
-        let request_region = config.region.clone();
+    pub fn new(config: &MapConfig, options: MapGpuOptions) -> Self {
+        let request_region = config.region().clone();
         Self::with_viewport_signal(
             config,
             options,
@@ -1385,23 +1385,24 @@ impl MapScene {
     }
 
     pub(crate) fn with_viewport_signal(
-        config: MapConfig,
+        config: &MapConfig,
         options: MapGpuOptions,
         viewport_size: Binding<Option<(f32, f32)>>,
         request_region: Computed<Region>,
         animate_camera_changes: Computed<bool>,
     ) -> Self {
         let location = config
-            .user_location
-            .filter(|_| config.user_location_visibility.is_visible())
+            .user_location()
+            .filter(|_| config.user_location_visibility().is_visible())
+            .cloned()
             .unwrap_or_else(|| Computed::constant(None));
         let invalidator = Rc::new(RefCell::new(None::<SceneInvalidator>));
-        let initial_region = config.region.snapshot();
+        let initial_region = config.region().snapshot();
         let mut watchers = Vec::with_capacity(4);
         for signal in [
-            &config.region as &dyn ErasedRedrawSignal,
+            config.region() as &dyn ErasedRedrawSignal,
             &request_region,
-            &config.annotations,
+            config.annotations(),
         ] {
             watchers.push(signal.redraw_guard(Rc::clone(&invalidator)));
         }
@@ -1413,16 +1414,16 @@ impl MapScene {
             cache: Rc::new(RefCell::new(TileCache::new(options.tile_cache_bytes.get()))),
             options,
             viewport_size,
-            region: config.region,
+            region: config.region().clone(),
             request_region,
             animate_camera_changes,
-            annotations: config.annotations,
+            annotations: config.annotations().clone(),
             location,
-            map_style: config.style,
-            status: config.status,
+            map_style: config.style(),
+            status: config.status().cloned(),
             chrome: MapChrome {
-                compass: config.compass_visibility,
-                scale: config.scale_visibility,
+                compass: config.compass_visibility(),
+                scale: config.scale_visibility(),
             },
             invalidator,
             state: Rc::new(RefCell::new(MapSceneState {
@@ -2625,7 +2626,7 @@ impl MapPainter {
         resources: &mut RecordingResources<'_>,
     ) {
         for annotation in annotations {
-            let (x, y) = camera.coordinate_point(annotation.coordinate);
+            let (x, y) = camera.coordinate_point(annotation.coordinate());
             let marker = ShapeData::of(&Circle::new((x, y), 6.0).to_path(0.1));
             scene.fill(
                 Fixed(marker),
@@ -2633,7 +2634,7 @@ impl MapPainter {
             );
             self.draw_label(
                 scene,
-                annotation.title.as_str(),
+                annotation.title().as_str(),
                 13.0,
                 (x, y - 15.0),
                 "center",
@@ -4041,7 +4042,7 @@ mod tests {
             .shows_scale(false)
             .config();
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut map = MapScene::new(config, options);
+        let mut map = MapScene::new(&config, options);
         {
             let mut state = map.state.borrow_mut();
             state.request = Some(RequestKey { region, viewport });
@@ -4102,7 +4103,7 @@ mod tests {
             .shows_scale(false)
             .config();
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut map = MapScene::new(config, options);
+        let mut map = MapScene::new(&config, options);
         {
             let mut state = map.state.borrow_mut();
             state.style = Some(style);

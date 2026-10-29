@@ -313,17 +313,17 @@ pub fn install(env: &mut Environment) {
             .expect("GPU Map requires MapGpuOptions in the application environment")
             .clone();
         let semantics = map_semantics(env, &config);
-        if !config.interactivity.is_interactive() {
+        if !config.interactivity().is_interactive() {
             return semantics.apply(AnyView::new(render::map_surface(MapScene::new(
-                config, options,
+                &config, options,
             ))));
         }
 
-        let controller = Rc::new(MapGestureController::new(&config.region));
-        config.region = Computed::new(controller.region.clone());
+        let controller = Rc::new(MapGestureController::new(config.region()));
+        config.set_region(Computed::new(controller.region.clone()));
         let scene = render::map_surface_with_interaction(
             MapScene::with_viewport_signal(
-                config,
+                &config,
                 options,
                 controller.viewport.clone(),
                 Computed::new(controller.settled_region.clone()),
@@ -394,8 +394,9 @@ fn map_semantics(env: &Environment, config: &MapConfig) -> MapSemantics {
     let label = env.get::<AccessibilityLabel>().is_none().then(|| {
         AccessibilityLabel::new(
             config
-                .region
-                .zip(&config.annotations)
+                .region()
+                .clone()
+                .zip(config.annotations())
                 .map(|(region, annotations)| describe_map(region, &annotations))
                 .computed(),
         )
@@ -415,7 +416,7 @@ fn describe_map(region: Region, annotations: &[waterui_map::Annotation]) -> Str 
     }
     let titles = annotations
         .iter()
-        .map(|annotation| annotation.title.as_str())
+        .map(|annotation| annotation.title().as_str())
         .collect::<Vec<_>>()
         .join(", ");
     Str::from(format!(
@@ -492,7 +493,7 @@ impl MapGestureController {
     }
 
     fn handle_drag(&self, event: &DragEvent) {
-        match event.phase {
+        match event.phase() {
             GesturePhase::Started => {
                 self.animate_camera_changes.set(false);
                 self.gesture_origin.set(self.region.snapshot());
@@ -504,12 +505,12 @@ impl MapGestureController {
                 let origin = self.gesture_origin.snapshot();
                 let region = translated_region(
                     origin,
-                    event.translation.x,
-                    event.translation.y,
+                    event.translation().x,
+                    event.translation().y,
                     f64::from(width),
                     f64::from(height),
                 );
-                match event.phase {
+                match event.phase() {
                     GesturePhase::Updated => self.set_live_region(region),
                     GesturePhase::Ended => self.settle_region(region),
                     _ => unreachable!("drag region is produced only while updating or ending"),
@@ -520,7 +521,7 @@ impl MapGestureController {
     }
 
     fn handle_magnification(&self, event: &MagnificationEvent) {
-        match event.phase {
+        match event.phase() {
             GesturePhase::Started => {
                 self.animate_camera_changes.set(false);
                 self.gesture_origin.set(self.region.snapshot());
@@ -532,13 +533,13 @@ impl MapGestureController {
                 let origin = self.gesture_origin.snapshot();
                 let region = magnified_region(
                     origin,
-                    f64::from(event.scale),
-                    event.center.x,
-                    event.center.y,
+                    f64::from(event.scale()),
+                    event.center().x,
+                    event.center().y,
                     width,
                     height,
                 );
-                match event.phase {
+                match event.phase() {
                     GesturePhase::Updated => self.set_live_region(region),
                     GesturePhase::Ended => self.settle_region(region),
                     _ => {
