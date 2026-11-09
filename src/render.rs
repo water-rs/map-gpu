@@ -29,8 +29,8 @@ use waterui_graphics::draw::{
     Recorder, Sampling, ShapeData, Srgb,
 };
 use waterui_graphics::{
-    FontSource, ImageData, RecordingResources, Registered, Rgba8, SceneContent, SceneInvalidator,
-    SceneView, ScrollUnit, SurfaceInputEvent,
+    FontSource, GesturePhase, ImageData, RecordingResources, Registered, Rgba8, SceneContent,
+    SceneInvalidator, SceneView, ScrollPhase, ScrollUnit, SurfaceInputEvent,
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
 
@@ -1627,7 +1627,7 @@ impl SceneContent for MapScene {
             delta_x,
             delta_y,
             unit,
-            finished,
+            phase,
             ..
         } = event
         else {
@@ -1648,23 +1648,39 @@ impl SceneContent for MapScene {
             width: width.max(1.0) as u32,
             height: height.max(1.0) as u32,
         };
-        // Scroll deltas are content-relative: `delta_x` is positive when the
-        // content should move left, which is a negative pixel translation.
-        self.scroll_offset.x -= delta_x;
-        self.scroll_offset.y -= delta_y;
-        let pan_offset = self.scroll_offset;
-        self.surface_camera.apply(
-            &interaction,
-            SurfaceGesture::pan(pan_offset, true),
-            viewport,
-        );
-        if *finished {
-            // A `finished` scroll both ends a continuous gesture and carries
-            // discrete notches; settle the accumulated pan on top of the
-            // live application.
+        // A contact sequence and a momentum sequence are each one pan: it
+        // goes live on every delta and settles when its sequence ends.
+        // Contact ends before any momentum, and the map cannot know whether
+        // momentum follows, so contact settles at its own end and momentum
+        // pans as a gesture of its own from the settled camera. A discrete
+        // delta is complete on its own: it goes live and settles at once.
+        let (carries_delta, settles) = match phase {
+            ScrollPhase::Discrete => (true, true),
+            ScrollPhase::Contact(step) | ScrollPhase::Momentum(step) => match step {
+                GesturePhase::Started | GesturePhase::Moved => (true, false),
+                GesturePhase::Ended => (true, true),
+                // The platform abandoned the gesture: like the map's drag and
+                // magnification gestures, keep the camera the user last saw
+                // (the abandoned delta is not applied) and settle there.
+                GesturePhase::Cancelled => (false, true),
+            },
+        };
+        if carries_delta {
+            // Scroll deltas are content-relative: `delta_x` is positive when
+            // the content should move left, which is a negative pixel
+            // translation.
+            self.scroll_offset.x -= delta_x;
+            self.scroll_offset.y -= delta_y;
             self.surface_camera.apply(
                 &interaction,
-                SurfaceGesture::pan(pan_offset, false),
+                SurfaceGesture::pan(self.scroll_offset, true),
+                viewport,
+            );
+        }
+        if settles {
+            self.surface_camera.apply(
+                &interaction,
+                SurfaceGesture::pan(self.scroll_offset, false),
                 viewport,
             );
             self.scroll_offset = Point::ZERO;
