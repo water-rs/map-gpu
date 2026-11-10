@@ -102,34 +102,34 @@ ignored = ["getrandom"]
 # under `backends/hydrolysis` — so their requirements resolve there too
 # (water-rs/waterui#1449).
 [patch.crates-io]
-waterui = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-assets = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-assets-core = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-assets-macros = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-assets-planner = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-backend-core = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-controls = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-core = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-dylib = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-form = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-icon = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-internal = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-layout = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-locale = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-macros = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-map = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-media = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-navigation = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-shape = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-testing = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-text = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-url = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-video = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-watcher-set = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-waterui-webview = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
+waterui = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-core = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-form = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-map = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-media = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-testing = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-text = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-url = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-video = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", branch = "dev" }
 
 # Split components at the sources the framework's own patch table names.
 # `hydrolysis` enters this graph only through `waterui-testing`, whose
@@ -139,12 +139,12 @@ waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b
 
 # The engine and its filter crates live in the waterui repository under
 # `graphics/` and resolve to the same commit as the rest of the graph.
-cherenkov = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-cherenkov-cpu = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-cherenkov-gpu = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-filtrate = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-filtrate-core = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
-filtrate-derive = { git = "https://github.com/water-rs/waterui", branch = "feat/surface-input-break" }
+cherenkov = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+cherenkov-cpu = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+cherenkov-gpu = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+filtrate = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+filtrate-core = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+filtrate-derive = { git = "https://github.com/water-rs/waterui", branch = "dev" }
 
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki's
 # `dev` implements 0.5's (water-rs/suiteki#29), the source the framework's own
