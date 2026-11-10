@@ -10,11 +10,14 @@
 //! outright, and every tile request fails with `EAI_NODATA` after exhausting
 //! the retry policy — the map draws its background and nothing else.
 
+mod host;
 pub(crate) mod network;
 pub(crate) mod projection;
 mod render;
 pub(crate) mod style;
 pub(crate) mod tile;
+#[cfg(test)]
+mod visual_fixture;
 
 use std::{
     num::{NonZeroU32, NonZeroU64, NonZeroUsize},

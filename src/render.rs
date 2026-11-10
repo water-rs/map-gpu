@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
     sync::Arc,
@@ -12,6 +12,11 @@ use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
+use cherenkov::{
+    Backend, Draw, Engine, Fixed, Font, FontId, FontSource, Glyph, GlyphRun, GlyphStyle, Group,
+    Image, ImageData, Paint, Picture, Recorder, Region as RecordRegion, ResourceError, Rgba8,
+    Sampling, ShapeData, Srgb, Surface, Uploads,
+};
 use executor_core::spawn_local;
 use futures::{StreamExt as _, future::join_all, stream};
 use geo::{BooleanOps as _, BoundingRect as _, Simplify as _};
@@ -19,23 +24,18 @@ use geo_types::{Coord, Geometry, LineString, MultiLineString, MultiPolygon, Poly
 use kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, Shape as _, Stroke};
 use lru::LruCache;
 use maplibre_expr::{EvaluationContext, Value, evaluate};
-use nami::{Binding, Computed, Signal as _, binding, watcher::BoxWatcherGuard};
+use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
 use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use waterui_core::animation::Animation;
-use waterui_graphics::draw::{
-    self, Draw, Fixed, FontId, Glyph, GlyphRun, GlyphStyle, Group, ImageId, Paint, Picture,
-    Recorder, Sampling, ShapeData, Srgb,
-};
-use waterui_graphics::{
-    FontSource, GesturePhase, ImageData, RecordingResources, Registered, Rgba8, SceneContent,
-    SceneInvalidator, SceneView, ScrollPhase, ScrollUnit, SurfaceInputEvent,
-};
+use waterui_graphics::{GesturePhase, GpuContentView, ScrollPhase, ScrollUnit, SurfaceInputEvent};
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
 
 use crate::{
-    MapGestureController, MapGpuOptions, MapLoadError, network,
+    MapGestureController, MapGpuOptions, MapLoadError,
+    host::{self, Shared},
+    network,
     projection::{Camera, TILE_OVERSCAN_PIXELS, TILE_SIZE, TileId, Viewport},
     style::{LayerKind, MapStyle, SourceKind, StyleLayer, TileSource},
     tile::{DemTile, RasterTile, TileFeature, VectorTile},
@@ -84,7 +84,7 @@ enum LoadedTiles {
 
 const MAP_BACKGROUND: [f32; 4] = [0.973, 0.957, 0.941, 1.0];
 /// A colour in sRGB: the space every `MapLibre` style property is authored in.
-type Color = draw::Color<Srgb>;
+type Color = cherenkov::Color<Srgb>;
 /// Inset of the map's own chrome (compass, scale bar) from the viewport edge.
 const CHROME_INSET: f64 = 12.0;
 const COMPASS_RADIUS: f64 = 17.0;
@@ -541,11 +541,11 @@ impl TileCache {
 /// A `Draw` target that accepts [`Fixed`] values for every operand the map
 /// painter emits.
 ///
-/// [`StaticRecorder`][draw::StaticRecorder] (the frozen base picture)
-/// and [`Recorder`][draw::Recorder] (live frames) both satisfy these
-/// `From`s — `Fixed` is the `StaticRecorder`'s operand type itself and
-/// converts into the `Recorder`'s `Live` signal — so one painter records
-/// into either target.
+/// [`StaticRecorder`][cherenkov::StaticRecorder] (a frozen picture) and
+/// [`Recorder`] (the retained recording) both satisfy these `From`s —
+/// `Fixed` is the `StaticRecorder`'s operand type itself and converts into
+/// the `Recorder`'s `Live` signal — so one painter records into either
+/// target.
 trait ReplayDraw:
     Draw<
         Value<ShapeData>: From<Fixed<ShapeData>>,
@@ -578,18 +578,41 @@ type FontKey = (u64, u32);
 /// Dedup key for an image: the pixel buffer's allocation identity and extents.
 type ImageKey = (usize, u32, u32);
 
+/// What a recording registers its fonts and images with: the engine that
+/// draws it.
+///
+/// A handle the engine returns names its resource in recordings, and the
+/// engine frees the resource only once no installed recording draws it and
+/// every handle has dropped.
+pub trait Resources {
+    /// Registers a font from its bytes.
+    fn font(&self, source: FontSource) -> Result<Font, ResourceError>;
+
+    /// Uploads an `Rgba8` image.
+    fn image(&self, data: ImageData<Rgba8>) -> Result<Image<Rgba8>, ResourceError>;
+}
+
+impl<B: Backend + Uploads<Rgba8>> Resources for Engine<B> {
+    fn font(&self, source: FontSource) -> Result<Font, ResourceError> {
+        Self::font(self, source)
+    }
+
+    fn image(&self, data: ImageData<Rgba8>) -> Result<Image<Rgba8>, ResourceError> {
+        Self::image(self, data)
+    }
+}
+
 /// Registered handles kept for as long as a recording names them.
 ///
-/// Mirrors `SceneResources`'s contract: a source the recording first reaches
-/// is registered in the frame that draws it, and a source the engine rejects
-/// is remembered in `failed_*` so it is skipped rather than re-registered.
-/// Callers decide the lifetime: the frozen base [`Picture`] keeps its
-/// `Registrations` for as long as the picture replays, while the per-frame
-/// overlay set calls [`Registrations::end_frame`] after each recording.
+/// A source the recording first reaches is registered when it is first drawn,
+/// and a source the engine rejects is remembered in `failed_*` so it is
+/// skipped rather than registered again. Callers decide the lifetime: a
+/// [`PreparedMap`] keeps its tile images for as long as it draws them, while
+/// labels call [`Registrations::end_frame`] after each placement pass.
 #[derive(Debug, Default)]
 struct Registrations {
-    fonts: HashMap<FontKey, Registered<FontId>>,
-    images: HashMap<ImageKey, Registered<ImageId>>,
+    fonts: HashMap<FontKey, Font>,
+    images: HashMap<ImageKey, Image<Rgba8>>,
     used_fonts: HashSet<FontKey>,
     used_images: HashSet<ImageKey>,
     failed_fonts: HashSet<FontKey>,
@@ -597,24 +620,23 @@ struct Registrations {
 }
 
 impl Registrations {
-    /// The `FontId` for `font`, registering it with `table` on first use.
-    fn font(
-        &mut self,
-        font: &parley::FontData,
-        table: &mut RecordingResources<'_>,
-    ) -> Option<FontId> {
+    /// The `FontId` for `font`, registering it with `resources` on first use.
+    fn font(&mut self, font: &parley::FontData, resources: &dyn Resources) -> Option<FontId> {
         let key = (font.data.id(), font.index);
         if let Some(handle) = self.fonts.get(&key) {
             self.used_fonts.insert(key);
-            return Some(table.name(handle));
+            return Some(handle.id());
         }
         if self.failed_fonts.contains(&key) {
             return None;
         }
-        let source = FontSource::bytes(Arc::<[u8]>::from(font.data.data())).with_index(font.index);
-        match table.font(source) {
+        let source = FontSource {
+            data: Arc::<[u8]>::from(font.data.data()),
+            index: font.index,
+        };
+        match resources.font(source) {
             Ok(handle) => {
-                let id = table.name(&handle);
+                let id = handle.id();
                 self.fonts.insert(key, handle);
                 self.used_fonts.insert(key);
                 Some(id)
@@ -627,30 +649,28 @@ impl Registrations {
         }
     }
 
-    /// The `ImageId` for `pixels`, registering it with `table` on first use.
+    /// The `ImageId` for `pixels`, registering it with `resources` on first use.
     fn image(
         &mut self,
         pixels: &Arc<[u8]>,
         width: u32,
         height: u32,
-        table: &mut RecordingResources<'_>,
-    ) -> Option<ImageId> {
+        resources: &dyn Resources,
+    ) -> Option<&Image<Rgba8>> {
         let key = (Arc::as_ptr(pixels).cast::<u8>() as usize, width, height);
-        if let Some(handle) = self.images.get(&key) {
+        if self.images.contains_key(&key) {
             self.used_images.insert(key);
-            return Some(table.name(handle));
+            return self.images.get(&key);
         }
         if self.failed_images.contains(&key) {
             return None;
         }
         let data = ImageData::<Rgba8>::new(width, height, Arc::clone(pixels))
-            .and_then(|data| table.image(data));
+            .and_then(|data| resources.image(data));
         match data {
             Ok(handle) => {
-                let id = table.name(&handle);
-                self.images.insert(key, handle);
                 self.used_images.insert(key);
-                Some(id)
+                Some(self.images.entry(key).or_insert(handle))
             }
             Err(error) => {
                 tracing::warn!("GPU map image registration failed: {error}");
@@ -669,7 +689,7 @@ impl Registrations {
     }
 }
 
-/// A fully loaded map scene ready for scene recording.
+/// A fully loaded map scene ready for recording.
 ///
 /// This is an internal loading product: it is produced by the tile loader and
 /// consumed by the painter, and there is no way (nor reason) to build one from
@@ -678,12 +698,11 @@ pub struct PreparedMap {
     style: MapStyle,
     camera: Camera,
     tiles: SourceTiles,
-    annotations: Vec<Annotation>,
-    location: Option<Location>,
-    chrome: MapChrome,
     painter: MapPainter,
-    /// Registrations the per-frame overlay painting names.
+    /// The tile images (`raster`, `hillshade`, `heatmap`) this map draws.
     registrations: Registrations,
+    /// The fonts the labels name; released after each placement pass.
+    label_registrations: Registrations,
     /// Viewport-bound layers recorded once for `camera` — `heatmap` — keyed
     /// by style layer index and replayed under [`camera_transform`].
     recorded: BTreeMap<usize, RecordedLayer>,
@@ -699,8 +718,6 @@ impl std::fmt::Debug for PreparedMap {
             .debug_struct("PreparedMap")
             .field("camera", &self.camera)
             .field("tile_count", &self.tiles.tile_count())
-            .field("annotation_count", &self.annotations.len())
-            .field("has_location", &self.location.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -792,71 +809,22 @@ impl PreparedMap {
             style,
             camera,
             tiles,
-            annotations: Vec::new(),
-            location: None,
-            chrome: MapChrome {
-                compass: MapVisibility::Hidden,
-                scale: MapVisibility::Hidden,
-            },
             painter: MapPainter::default(),
             registrations: Registrations::default(),
+            label_registrations: Registrations::default(),
             recorded: BTreeMap::new(),
             cache,
         })
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "validated positive offscreen dimensions are compared in the integer GPU viewport domain"
-)]
-impl SceneContent for PreparedMap {
-    fn build_scene(
-        &mut self,
-        recorder: &mut Recorder,
-        resources: &mut RecordingResources<'_>,
-        width: f32,
-        height: f32,
-    ) -> bool {
-        assert_eq!(
-            (width as u32, height as u32),
-            (self.camera.viewport.width, self.camera.viewport.height),
-            "PreparedMap must be rendered at its prepared viewport size"
-        );
-        self.append_base_scene_for_camera(recorder, resources, self.camera);
-        self.painter.paint_overlays(
-            recorder,
-            self.camera,
-            &self.annotations,
-            self.location.as_ref(),
-            self.chrome,
-            &mut self.registrations,
-            resources,
-        );
-        self.registrations.end_frame();
-        false
-    }
-
-    // Every `Registered` handle in `registrations` and the recorded layers'
-    // and every recorded tile picture belongs to the engine that minted
-    // them; the next `build_scene` re-records lazily and re-registers what
-    // it names. Style, camera, tiles, annotations and the painter are
-    // source and stay.
-    fn rebuild_for_engine(&mut self) {
-        self.registrations = Registrations::default();
-        self.recorded.clear();
-        self.cache.borrow_mut().pictures.clear();
-    }
-}
-
 /// A viewport-bound layer recorded once for the prepared camera — today
 /// `heatmap`, whose CPU density field must not accumulate every frame — and
 /// replayed under [`camera_transform`] for the live camera until the next
-/// `PreparedMap` or engine rebuild.
+/// `PreparedMap`.
 ///
 /// The recorded [`Picture`] names its image through `_registrations`, held
-/// for exactly the picture's lifetime (the old frozen-base contract).
+/// for exactly the picture's lifetime.
 struct RecordedLayer {
     picture: Picture,
     _registrations: Registrations,
@@ -870,32 +838,129 @@ impl std::fmt::Debug for RecordedLayer {
     }
 }
 
+/// Where one style layer's commands live in the installed recording.
+struct LayerSlot {
+    /// The layer's index in the style.
+    index: usize,
+    region: RecordRegion,
+}
+
 impl PreparedMap {
-    /// Paints the base layers under `camera`.
+    /// Records every style layer, in paint order, each into a region of its
+    /// own, so a layer can record again without disturbing the others.
     ///
     /// Vector tile content replays from the shared tile-picture cache — one
     /// [`Picture`] per (source tile, style layer) recorded in tile-local
-    /// space and transformed by [`Camera::tile_transform`]. Symbol labels
-    /// replay their cached glyph runs after per-frame collision placement,
-    /// and `heatmap` replays the picture recorded for `self.camera` under
-    /// [`camera_transform`].
-    fn append_base_scene_for_camera(
+    /// space and placed by a transform that follows `live`, the camera. The
+    /// same holds for `raster` and `hillshade` tiles and for `heatmap`, which
+    /// replays the picture recorded for `self.camera`. Symbol labels replay
+    /// their cached glyph runs after collision placement.
+    fn record_layers(
         &mut self,
-        scene: &mut impl ReplayDraw,
-        resources: &mut RecordingResources<'_>,
+        recorder: &mut Recorder,
+        live: &Binding<Camera>,
+        resources: &dyn Resources,
+    ) -> Vec<LayerSlot> {
+        let camera = live.snapshot();
+        self.painter.occupied_labels.clear();
+        let slots = (0..self.style.layers.len())
+            .map(|index| LayerSlot {
+                index,
+                region: recorder.region(|recorder| {
+                    self.record_layer(recorder, index, camera, live, resources);
+                }),
+            })
+            .collect();
+        self.label_registrations.end_frame();
+        slots
+    }
+
+    /// Records style layer `index` as it reads at `camera`'s zoom.
+    fn record_layer(
+        &mut self,
+        recorder: &mut Recorder,
+        index: usize,
         camera: Camera,
+        live: &Binding<Camera>,
+        resources: &dyn Resources,
     ) {
-        self.painter.paint_base(
-            scene,
-            &self.style,
-            self.camera,
+        let Self {
+            style,
+            camera: record_camera,
+            tiles,
+            painter,
+            registrations,
+            label_registrations,
+            recorded,
+            cache,
+        } = self;
+        painter.paint_layer(
+            recorder,
+            style,
+            index,
+            *record_camera,
             camera,
-            &self.tiles,
-            &mut self.cache.borrow_mut(),
-            &mut self.recorded,
-            &mut self.registrations,
+            live,
+            tiles,
+            &mut cache.borrow_mut(),
+            recorded,
+            registrations,
+            label_registrations,
             resources,
         );
+    }
+
+    /// Forgets what was registered with an engine that is gone.
+    fn engine_replaced(&mut self) {
+        self.registrations = Registrations::default();
+        self.label_registrations = Registrations::default();
+        self.recorded.clear();
+    }
+
+    /// Whether style layer `index` is drawn at `zoom`.
+    fn layer_active(&self, index: usize, zoom: f64) -> bool {
+        self.style.layers[index].active(zoom)
+    }
+
+    /// Whether style layer `index` reads the zoom beyond switching on and off:
+    /// a camera that changes zoom records it again.
+    fn layer_reads_zoom(&self, index: usize) -> bool {
+        matches!(
+            self.style.layers[index].kind,
+            LayerKind::Background | LayerKind::Raster | LayerKind::Hillshade
+        )
+    }
+
+    /// Whether style layer `index` places labels, which a camera move records
+    /// again.
+    fn layer_places_labels(&self, index: usize) -> bool {
+        self.style.layers[index].kind == LayerKind::Symbol
+    }
+
+    /// Records `slots` again for the camera `live` now holds: layers that
+    /// switched on or off at the new zoom or read it, and every symbol layer,
+    /// whose labels place against the new view.
+    fn follow_camera(
+        &mut self,
+        slots: &[LayerSlot],
+        previous: Camera,
+        live: &Binding<Camera>,
+        resources: &dyn Resources,
+    ) {
+        let camera = live.snapshot();
+        self.painter.occupied_labels.clear();
+        for slot in slots {
+            let switched = self.layer_active(slot.index, previous.zoom)
+                != self.layer_active(slot.index, camera.zoom);
+            let zoomed = (previous.zoom - camera.zoom).abs() > f64::EPSILON
+                && self.layer_reads_zoom(slot.index);
+            if switched || zoomed || self.layer_places_labels(slot.index) {
+                slot.region.record(|recorder| {
+                    self.record_layer(recorder, slot.index, camera, live, resources);
+                });
+            }
+        }
+        self.label_registrations.end_frame();
     }
 }
 
@@ -1087,7 +1152,7 @@ struct MapRequestTask {
     options: MapGpuOptions,
     state: Rc<RefCell<MapSceneState>>,
     cache: Rc<RefCell<TileCache>>,
-    invalidator: Rc<RefCell<Option<SceneInvalidator>>>,
+    shared: Arc<Shared>,
 }
 
 impl MapRequestTask {
@@ -1212,7 +1277,7 @@ impl MapRequestTask {
             }
         }
         drop(state);
-        invalidate(&self.invalidator);
+        self.shared.wake();
     }
 
     #[expect(
@@ -1230,9 +1295,7 @@ impl MapRequestTask {
 struct ResolvedMapFrame {
     viewport: Viewport,
     camera: Option<Camera>,
-    /// The generation a resolved frame was prepared at; read by the
-    /// failure-recovery tests that pin which snapshot a frame replayed.
-    #[allow(dead_code)]
+    /// The generation a resolved frame was prepared at.
     prepared_generation: Option<u64>,
     annotations: Vec<Annotation>,
     location: Option<Location>,
@@ -1330,7 +1393,8 @@ fn interpolate_region(from: Region, to: Region, progress: f64) -> Region {
     )
 }
 
-/// Live scene content used by the GPU map hook.
+/// The live state of one GPU map: its signals, camera, tile loading and
+/// gestures. [`map_surface`] turns it into a view that draws it.
 pub struct MapScene {
     options: MapGpuOptions,
     region: Computed<Region>,
@@ -1341,14 +1405,19 @@ pub struct MapScene {
     map_style: waterui_map::MapStyle,
     status: Option<Binding<MapStatus>>,
     chrome: MapChrome,
-    invalidator: Rc<RefCell<Option<SceneInvalidator>>>,
+    /// The mailbox with the render-thread half, whose wake this map's
+    /// signals and tile loads use.
+    shared: Arc<Shared>,
+    /// Counts the changes to what the overlays show (pins, the user's
+    /// location), so the overlays record again only when one happened.
+    overlay_epoch: Rc<Cell<u64>>,
     state: Rc<RefCell<MapSceneState>>,
     cache: Rc<RefCell<TileCache>>,
     viewport_size: Binding<Option<(f32, f32)>>,
     _watchers: Vec<BoxWatcherGuard>,
     painter: MapPainter,
     camera_motion: CameraMotion,
-    /// Registrations the per-frame overlay painting names.
+    /// The fonts the overlays name.
     registrations: Registrations,
     /// The gesture controller this surface drives, when the view is
     /// interactive — `None` on a static map.
@@ -1396,20 +1465,17 @@ impl MapScene {
             .filter(|_| config.user_location_visibility().is_visible())
             .cloned()
             .unwrap_or_else(|| Computed::constant(None));
-        let invalidator = Rc::new(RefCell::new(None::<SceneInvalidator>));
+        let shared = Arc::new(Shared::default());
+        let overlay_epoch = Rc::new(Cell::new(0));
         let initial_region = config.region().snapshot();
         let mut watchers = Vec::with_capacity(4);
-        for signal in [
-            config.region() as &dyn ErasedRedrawSignal,
-            &request_region,
-            config.annotations(),
-        ] {
-            watchers.push(signal.redraw_guard(Rc::clone(&invalidator)));
+        for signal in [config.region() as &dyn ErasedWakeSignal, &request_region] {
+            watchers.push(signal.wake_guard(Arc::clone(&shared), None));
         }
-        watchers.push(location.watch({
-            let invalidator = Rc::clone(&invalidator);
-            move |_| invalidate(&invalidator)
-        }));
+        // What the overlays show: a change records them again.
+        for signal in [config.annotations() as &dyn ErasedWakeSignal, &location] {
+            watchers.push(signal.wake_guard(Arc::clone(&shared), Some(Rc::clone(&overlay_epoch))));
+        }
         Self {
             cache: Rc::new(RefCell::new(TileCache::new(options.tile_cache_bytes.get()))),
             options,
@@ -1425,7 +1491,8 @@ impl MapScene {
                 compass: config.compass_visibility(),
                 scale: config.scale_visibility(),
             },
-            invalidator,
+            shared,
+            overlay_epoch,
             state: Rc::new(RefCell::new(MapSceneState {
                 style: None,
                 prepared: None,
@@ -1486,7 +1553,7 @@ impl MapScene {
                 options: self.options.clone(),
                 state: Rc::clone(&self.state),
                 cache: Rc::clone(&self.cache),
-                invalidator: Rc::clone(&self.invalidator),
+                shared: Arc::clone(&self.shared),
             }
             .run(),
         )
@@ -1542,87 +1609,57 @@ impl MapScene {
     }
 }
 
-trait ErasedRedrawSignal {
-    fn redraw_guard(&self, invalidator: Rc<RefCell<Option<SceneInvalidator>>>) -> BoxWatcherGuard;
+/// A signal whose changes wake the host for another frame.
+trait ErasedWakeSignal {
+    /// Wakes `shared`'s host on every change, and counts the change in
+    /// `epoch` when asked to.
+    fn wake_guard(&self, shared: Arc<Shared>, epoch: Option<Rc<Cell<u64>>>) -> BoxWatcherGuard;
 }
 
-impl<T: 'static> ErasedRedrawSignal for Computed<T> {
-    fn redraw_guard(&self, invalidator: Rc<RefCell<Option<SceneInvalidator>>>) -> BoxWatcherGuard {
-        self.watch(move |_| invalidate(&invalidator))
+impl<T: 'static> ErasedWakeSignal for Computed<T> {
+    fn wake_guard(&self, shared: Arc<Shared>, epoch: Option<Rc<Cell<u64>>>) -> BoxWatcherGuard {
+        self.watch(move |_| {
+            if let Some(epoch) = &epoch {
+                epoch.set(epoch.get().wrapping_add(1));
+            }
+            shared.wake();
+        })
     }
 }
 
-fn invalidate(invalidator: &Rc<RefCell<Option<SceneInvalidator>>>) {
-    if let Some(invalidator) = invalidator.borrow().as_ref() {
-        invalidator();
-    }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "validated positive scene dimensions are quantized to the integer GPU viewport domain"
-)]
-impl SceneContent for MapScene {
-    fn build_scene(
-        &mut self,
-        recorder: &mut Recorder,
-        resources: &mut RecordingResources<'_>,
-        width: f32,
-        height: f32,
-    ) -> bool {
-        let frame = self.resolve_frame(width, height);
-        let mut state = self.state.borrow_mut();
-        fill_viewport(recorder, frame.viewport, Color::new(MAP_BACKGROUND));
-        if let (Some(prepared), Some(camera)) = (state.prepared.as_mut(), frame.camera) {
-            prepared.append_base_scene_for_camera(recorder, resources, camera);
-            self.painter.paint_overlays(
-                recorder,
-                camera,
-                &frame.annotations,
-                frame.location.as_ref(),
-                self.chrome,
-                &mut self.registrations,
-                resources,
-            );
-        }
-        self.registrations.end_frame();
-        frame.animating
+impl MapScene {
+    /// The mailbox this map's signals and tile loads wake the host through.
+    pub(crate) fn shared(&self) -> Arc<Shared> {
+        Arc::clone(&self.shared)
     }
 
-    // The invalidator in the shared cell and the overlay `Registered`
-    // handles belong to the old engine; the prepared maps carry their own
-    // engine-bound base pictures and registrations. The watches armed on
-    // the signals read the cell, so they keep working — the replacement
-    // engine's `set_invalidator` repopulates it, and the next
-    // `build_scene` re-registers and re-records what it draws. Region,
-    // style, tiles, camera and gesture state are source and stay.
-    fn rebuild_for_engine(&mut self) {
-        *self.invalidator.borrow_mut() = None;
+    /// Forgets everything registered with an engine that is gone: its fonts
+    /// and images, and the pictures and replays that name them.
+    pub(crate) fn engine_replaced(&mut self) {
         self.registrations = Registrations::default();
-        let mut state = self.state.borrow_mut();
-        if let Some(prepared) = state.prepared.as_mut() {
-            prepared.rebuild_for_engine();
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(prepared) = state.prepared.as_mut() {
+                prepared.engine_replaced();
+            }
+            if let Some((_, prepared)) = state.pending_prepared.as_mut() {
+                prepared.engine_replaced();
+            }
         }
-        if let Some((_, prepared)) = state.pending_prepared.as_mut() {
-            prepared.rebuild_for_engine();
-        }
+        self.cache.borrow_mut().pictures.clear();
     }
 
-    fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
-        *self.invalidator.borrow_mut() = invalidator;
-        invalidate(&self.invalidator);
-    }
-
-    fn wants_input_events(&self) -> bool {
+    /// Whether this map takes input on its surface.
+    pub(crate) const fn wants_input_events(&self) -> bool {
         self.interaction.is_some()
     }
 
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "the accumulated scroll offset is a display-space pixel distance"
+        clippy::cast_sign_loss,
+        reason = "the scroll offset is a display-space pixel distance and the viewport size is clamped to at least one"
     )]
-    fn input(&mut self, event: &SurfaceInputEvent) {
+    pub(crate) fn input(&mut self, event: &SurfaceInputEvent) {
         let SurfaceInputEvent::Scroll {
             delta_x,
             delta_y,
@@ -1685,7 +1722,7 @@ impl SceneContent for MapScene {
             );
             self.scroll_offset = Point::ZERO;
         }
-        invalidate(&self.invalidator);
+        self.shared.wake();
     }
 }
 
@@ -1789,11 +1826,11 @@ impl SurfaceCameraGesture {
 ///
 /// This is the public path from a hand-built scene to a renderable view: build
 /// a [`MapScene`] from a [`MapConfig`](waterui_map::MapConfig), hand it here,
-/// and place the returned [`SceneView`] like any other view. The built-in
+/// and place the returned [`GpuContentView`] like any other view. The built-in
 /// `Map` view goes through the same surface, adding the gesture
 /// controller that drives pan and zoom.
 #[must_use]
-pub fn map_surface(map: MapScene) -> SceneView {
+pub fn map_surface(map: MapScene) -> GpuContentView {
     map_surface_with_interaction(map, None)
 }
 
@@ -1802,9 +1839,181 @@ pub fn map_surface(map: MapScene) -> SceneView {
 pub fn map_surface_with_interaction(
     mut map: MapScene,
     interaction: Option<Rc<MapGestureController>>,
-) -> SceneView {
+) -> GpuContentView {
     map.interaction = interaction;
-    SceneView::new(map)
+    host::view(map)
+}
+
+/// What fixes the structure of the installed recording: a different one is
+/// recorded whole, anything else follows the camera in place.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StructureKey {
+    /// The prepared map the recording draws, `None` before the first lands.
+    generation: Option<u64>,
+    /// The box in points.
+    viewport: Viewport,
+    /// Pixels per point.
+    scale: f32,
+}
+
+/// The installed recording's moving parts.
+struct Drawn {
+    /// The camera every placement in the recording follows.
+    camera: Binding<Camera>,
+    /// One region per style layer, in paint order.
+    layers: Vec<LayerSlot>,
+    overlays: RecordRegion,
+    /// The overlay epoch the overlays were recorded at.
+    overlay_epoch: u64,
+}
+
+/// A map retained on a surface: the recording installed on its root layer and
+/// the handles that keep it up to date.
+///
+/// [`Self::update`] records the surface whole only when its structure changes
+/// — a new prepared map, a new box. A camera move moves the recording's
+/// placements through the camera signal and records again only what the move
+/// changes the choice of: the labels, the overlays, and layers crossing a zoom
+/// threshold. Each of those is a region of its own.
+pub struct Retained<B: Backend> {
+    surface: Surface<B>,
+    installed: Option<(StructureKey, Option<Drawn>)>,
+    /// How many times the surface was recorded whole.
+    #[cfg(test)]
+    installs: usize,
+}
+
+impl<B: Backend> Retained<B> {
+    /// A retained map on `surface`, with nothing recorded yet.
+    pub(crate) const fn new(surface: Surface<B>) -> Self {
+        Self {
+            surface,
+            installed: None,
+            #[cfg(test)]
+            installs: 0,
+        }
+    }
+
+    /// The surface the map is retained on.
+    pub(crate) const fn surface(&self) -> &Surface<B> {
+        &self.surface
+    }
+
+    /// Brings the recording up to date for the map's state at `pixels` and
+    /// `scale`, answering whether the camera is still moving.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel extents of a surface fit f32 exactly"
+    )]
+    pub(crate) fn update(
+        &mut self,
+        resources: &dyn Resources,
+        scene: &mut MapScene,
+        pixels: (u32, u32),
+        scale: f32,
+    ) -> bool {
+        let frame = scene.resolve_frame(pixels.0 as f32 / scale, pixels.1 as f32 / scale);
+        let key = StructureKey {
+            generation: frame.prepared_generation,
+            viewport: frame.viewport,
+            scale,
+        };
+        match &mut self.installed {
+            Some((installed, drawn)) if *installed == key => {
+                if let (Some(drawn), Some(camera)) = (drawn, frame.camera) {
+                    Self::follow(drawn, scene, &frame, camera, resources);
+                }
+            }
+            _ => {
+                let drawn = self.install(resources, scene, &frame, scale);
+                self.installed = Some((key, drawn));
+                #[cfg(test)]
+                {
+                    self.installs += 1;
+                }
+            }
+        }
+        frame.animating
+    }
+
+    /// Records the surface whole.
+    fn install(
+        &self,
+        resources: &dyn Resources,
+        scene: &mut MapScene,
+        frame: &ResolvedMapFrame,
+        scale: f32,
+    ) -> Option<Drawn> {
+        let mut drawn = None;
+        let mut state = scene.state.borrow_mut();
+        let content = self.surface.record(|recorder| {
+            fill_viewport(recorder, frame.viewport, Color::new(MAP_BACKGROUND));
+            let (Some(prepared), Some(camera)) = (state.prepared.as_mut(), frame.camera) else {
+                return;
+            };
+            let live = binding(camera);
+            let layers = prepared.record_layers(recorder, &live, resources);
+            let overlays = recorder.region(|recorder| {
+                scene.painter.paint_overlays(
+                    recorder,
+                    camera,
+                    &frame.annotations,
+                    frame.location.as_ref(),
+                    scene.chrome,
+                    &mut scene.registrations,
+                    resources,
+                );
+                scene.registrations.end_frame();
+            });
+            drawn = Some(Drawn {
+                camera: live,
+                layers,
+                overlays,
+                overlay_epoch: scene.overlay_epoch.get(),
+            });
+        });
+        drop(state);
+        self.surface.update(|tx| {
+            // The recording is in points; the root layer scales it to pixels.
+            tx[self.surface.root()].transform(Affine::scale(f64::from(scale)));
+            tx[self.surface.root()].content(content);
+        });
+        drawn
+    }
+
+    /// Follows a camera move in place.
+    fn follow(
+        drawn: &mut Drawn,
+        scene: &mut MapScene,
+        frame: &ResolvedMapFrame,
+        camera: Camera,
+        resources: &dyn Resources,
+    ) {
+        let previous = drawn.camera.snapshot();
+        let moved = camera.region != previous.region;
+        if moved {
+            drawn.camera.set(camera);
+            if let Some(prepared) = scene.state.borrow_mut().prepared.as_mut() {
+                prepared.follow_camera(&drawn.layers, previous, &drawn.camera, resources);
+            }
+        }
+        let epoch = scene.overlay_epoch.get();
+        if moved || epoch != drawn.overlay_epoch {
+            drawn.overlay_epoch = epoch;
+            drawn.overlays.record(|recorder| {
+                scene.painter.paint_overlays(
+                    recorder,
+                    camera,
+                    &frame.annotations,
+                    frame.location.as_ref(),
+                    scene.chrome,
+                    &mut scene.registrations,
+                    resources,
+                );
+                scene.registrations.end_frame();
+            });
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1820,125 +2029,128 @@ struct MapPainter {
     reason = "style evaluation converts bounded MapLibre numeric values and forwards explicit render-state parameters"
 )]
 impl MapPainter {
-    /// Paints the style's base layers under `camera`.
+    /// Paints style layer `index` as it reads at `camera`, placed by `live`.
     ///
-    /// Paint order is exactly the style's: each layer draws fully before the
-    /// next starts. For the vector kinds that batch (`fill`,
-    /// `fill-extrusion`, `line`, `circle`) that means replaying one recorded
-    /// [`TilePicture`] per (tile, layer) in tile order — the granularity that
-    /// keeps style layer L of every tile ahead of layer L+1 of any tile.
-    /// `symbol` labels instead place globally each frame so collision
-    /// detection spans tile boundaries, though their shaping replays from the
-    /// tile cache; `heatmap` replays the layer recorded for `record_camera`;
-    /// `raster` and `hillshade` keep painting live.
+    /// Paint order is the style's: the caller keeps one region per layer, in
+    /// order, so each layer draws fully before the next starts. For the vector
+    /// kinds that batch (`fill`, `fill-extrusion`, `line`, `circle`) a layer is
+    /// one recorded [`TilePicture`] per tile — the granularity that keeps style
+    /// layer L of every tile ahead of layer L+1 of any tile — each placed by a
+    /// transform that follows `live`. `symbol` labels place globally against
+    /// `camera` so collision detection spans tile boundaries, though their
+    /// shaping replays from the tile cache; `heatmap` replays the layer
+    /// recorded for `record_camera`; `raster` and `hillshade` tiles follow
+    /// `live` like the vector tiles.
     #[expect(clippy::too_many_arguments, reason = "explicit render state")]
-    fn paint_base(
+    fn paint_layer(
         &mut self,
-        scene: &mut impl ReplayDraw,
+        scene: &mut Recorder,
         style: &MapStyle,
+        index: usize,
         record_camera: Camera,
         camera: Camera,
+        live: &Binding<Camera>,
         tiles: &SourceTiles,
         cache: &mut TileCache,
         recorded: &mut BTreeMap<usize, RecordedLayer>,
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        label_registrations: &mut Registrations,
+        resources: &dyn Resources,
     ) {
-        self.occupied_labels.clear();
-        let render_bounds = camera_render_bounds(camera);
-        for (index, layer) in style.layers.iter().enumerate() {
-            if !layer.active(camera.zoom) {
-                continue;
+        let layer = &style.layers[index];
+        if !layer.active(camera.zoom) {
+            return;
+        }
+        match layer.kind {
+            LayerKind::Background => Self::paint_background(scene, layer, camera),
+            LayerKind::Fill | LayerKind::FillExtrusion | LayerKind::Line | LayerKind::Circle => {
+                Self::paint_tile_layer(
+                    scene,
+                    style.fingerprint,
+                    index,
+                    layer,
+                    camera,
+                    live,
+                    tiles,
+                    cache,
+                );
             }
-            match layer.kind {
-                LayerKind::Background => Self::paint_background(scene, layer, camera),
-                LayerKind::Fill
-                | LayerKind::FillExtrusion
-                | LayerKind::Line
-                | LayerKind::Circle => {
-                    Self::paint_tile_layer(
-                        scene,
-                        style.fingerprint,
-                        index,
-                        layer,
-                        camera,
-                        tiles,
-                        cache,
-                    );
-                }
-                LayerKind::Symbol => {
-                    self.paint_symbol_layer(
-                        scene,
-                        style,
-                        index,
-                        layer,
-                        camera,
-                        tiles,
-                        render_bounds,
-                        cache,
-                        registrations,
-                        resources,
-                    );
-                }
-                LayerKind::Heatmap => {
-                    let entry = recorded.entry(index).or_insert_with(|| {
-                        let mut registrations = Registrations::default();
-                        let picture = Picture::record(|frozen| {
-                            Self::paint_heatmap(
-                                frozen,
-                                layer,
-                                record_camera,
-                                tiles,
-                                camera_render_bounds(record_camera),
-                                &mut registrations,
-                                resources,
-                            );
-                        });
-                        RecordedLayer {
-                            picture,
-                            _registrations: registrations,
-                        }
+            LayerKind::Symbol => {
+                self.paint_symbol_layer(
+                    scene,
+                    style,
+                    index,
+                    layer,
+                    camera,
+                    tiles,
+                    camera_render_bounds(camera),
+                    cache,
+                    label_registrations,
+                    resources,
+                );
+            }
+            LayerKind::Heatmap => {
+                let entry = recorded.entry(index).or_insert_with(|| {
+                    let mut registrations = Registrations::default();
+                    let picture = Picture::record(|frozen| {
+                        Self::paint_heatmap(
+                            frozen,
+                            layer,
+                            record_camera,
+                            tiles,
+                            camera_render_bounds(record_camera),
+                            &mut registrations,
+                            resources,
+                        );
                     });
-                    scene.picture(
-                        &entry.picture,
-                        Fixed(camera_transform(record_camera, camera).unwrap_or(Affine::IDENTITY)),
-                    );
-                }
-                LayerKind::Raster => {
-                    Self::paint_raster(scene, layer, camera, tiles, registrations, resources);
-                }
-                LayerKind::Hillshade => {
-                    Self::paint_hillshade(
-                        scene,
-                        style,
-                        index,
-                        layer,
-                        camera,
-                        tiles,
-                        cache,
-                        registrations,
-                        resources,
-                    );
-                }
-                // `sky` only has a visible extent once the camera can pitch away
-                // from straight-down. This camera is always top-down, so the
-                // layer is accepted, contributes nothing, and says so once.
-                LayerKind::Sky => tracing::debug!(
-                    layer = layer.id,
-                    "skipped sky layer: the GPU map camera has no pitch"
-                ),
+                    RecordedLayer {
+                        picture,
+                        _registrations: registrations,
+                    }
+                });
+                scene.picture(
+                    &entry.picture,
+                    live.clone().map(move |camera| {
+                        camera_transform(record_camera, camera).unwrap_or(Affine::IDENTITY)
+                    }),
+                );
             }
+            LayerKind::Raster => {
+                Self::paint_raster(scene, layer, camera, live, tiles, registrations, resources);
+            }
+            LayerKind::Hillshade => {
+                Self::paint_hillshade(
+                    scene,
+                    style,
+                    index,
+                    layer,
+                    camera,
+                    live,
+                    tiles,
+                    cache,
+                    registrations,
+                    resources,
+                );
+            }
+            // `sky` only has a visible extent once the camera can pitch away
+            // from straight-down. This camera is always top-down, so the
+            // layer is accepted, contributes nothing, and says so once.
+            LayerKind::Sky => tracing::debug!(
+                layer = layer.id,
+                "skipped sky layer: the GPU map camera has no pitch"
+            ),
         }
     }
 
     /// Replays one vector style layer tile by tile, recording each tile's
     /// picture on first use.
     fn paint_tile_layer(
-        scene: &mut impl ReplayDraw,
+        scene: &mut Recorder,
         fingerprint: u64,
         index: usize,
         layer: &StyleLayer,
         camera: Camera,
+        live: &Binding<Camera>,
         tiles: &SourceTiles,
         cache: &mut TileCache,
     ) {
@@ -1966,7 +2178,11 @@ impl MapPainter {
                 |picture| picture.byte_len,
                 || record_tile_layer(layer, camera, tile, source_layer),
             );
-            scene.picture(&picture.picture, Fixed(camera.tile_transform(tile.id)));
+            let tile = tile.id;
+            scene.picture(
+                &picture.picture,
+                live.clone().map(move |camera| camera.tile_transform(tile)),
+            );
         }
     }
 
@@ -1987,7 +2203,7 @@ impl MapPainter {
         render_bounds: Rect,
         cache: &mut TileCache,
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        resources: &dyn Resources,
     ) {
         let source_name = layer
             .source
@@ -2053,7 +2269,7 @@ impl MapPainter {
         tiles: &SourceTiles,
         render_bounds: Rect,
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        resources: &dyn Resources,
     ) {
         let zoom_context = EvaluationContext::new().with_zoom(camera.zoom);
         let opacity = property_number(layer, "heatmap-opacity", &zoom_context).unwrap_or(1.0);
@@ -2120,23 +2336,24 @@ impl MapPainter {
         if alpha < 1.0 {
             scene.clip(Fixed(ShapeData::of(&render_bounds.to_path(0.1))), |scene| {
                 scene.group(Fixed(Group::new().opacity(alpha)), |scene| {
-                    scene.image(image, Fixed(bounds), Sampling::Linear);
+                    scene.image(image.id(), Fixed(bounds), Sampling::Linear);
                 });
             });
         } else {
-            scene.image(image, Fixed(bounds), Sampling::Linear);
+            scene.image(image.id(), Fixed(bounds), Sampling::Linear);
         }
     }
 
     /// Draws a `raster` layer by placing each decoded image tile at the screen
     /// rect its tile id occupies under the current camera.
     fn paint_raster(
-        scene: &mut impl ReplayDraw,
+        scene: &mut Recorder,
         layer: &StyleLayer,
         camera: Camera,
+        live: &Binding<Camera>,
         tiles: &SourceTiles,
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        resources: &dyn Resources,
     ) {
         let context = EvaluationContext::new().with_zoom(camera.zoom);
         let opacity = property_number(layer, "raster-opacity", &context).unwrap_or(1.0);
@@ -2171,8 +2388,8 @@ impl MapPainter {
                             continue;
                         };
                         scene.image(
-                            image,
-                            Fixed(tile_image_rect(camera, tile.id, tile.width)),
+                            image.id(),
+                            image_rect(live, tile.id, tile.width),
                             Sampling::Linear,
                         );
                     }
@@ -2186,8 +2403,8 @@ impl MapPainter {
                 continue;
             };
             scene.image(
-                image,
-                Fixed(tile_image_rect(camera, tile.id, tile.width)),
+                image.id(),
+                image_rect(live, tile.id, tile.width),
                 Sampling::Linear,
             );
         }
@@ -2203,15 +2420,16 @@ impl MapPainter {
     /// instead of re-uploading every frame.
     #[expect(clippy::too_many_arguments, reason = "explicit render state")]
     fn paint_hillshade(
-        scene: &mut impl ReplayDraw,
+        scene: &mut Recorder,
         style: &MapStyle,
         index: usize,
         layer: &StyleLayer,
         camera: Camera,
+        live: &Binding<Camera>,
         tiles: &SourceTiles,
         cache: &mut TileCache,
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        resources: &dyn Resources,
     ) {
         let context = EvaluationContext::new().with_zoom(camera.zoom);
         let exaggeration =
@@ -2256,8 +2474,8 @@ impl MapPainter {
                 continue;
             };
             scene.image(
-                image,
-                Fixed(tile_image_rect(camera, tile.id, tile.width)),
+                image.id(),
+                image_rect(live, tile.id, tile.width),
                 Sampling::Linear,
             );
         }
@@ -2271,7 +2489,7 @@ impl MapPainter {
         location: Option<&Location>,
         chrome: MapChrome,
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        resources: &dyn Resources,
     ) {
         self.occupied_labels.clear();
         self.paint_annotations(scene, camera, annotations, registrations, resources);
@@ -2333,7 +2551,7 @@ impl MapPainter {
         scene: &mut impl ReplayDraw,
         camera: Camera,
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        resources: &dyn Resources,
     ) {
         let latitude = camera.region.center.latitude.get();
         let Some((meters, width)) = scale_bar_span(camera, latitude) else {
@@ -2474,7 +2692,7 @@ impl MapPainter {
         label: &CachedLabel,
         position: (f64, f64),
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        resources: &dyn Resources,
     ) {
         let origin = label_origin(
             position,
@@ -2561,7 +2779,7 @@ impl MapPainter {
         halo_color: Color,
         halo_width: f64,
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        resources: &dyn Resources,
     ) {
         let mut builder = self
             .layouts
@@ -2639,7 +2857,7 @@ impl MapPainter {
         camera: Camera,
         annotations: &[Annotation],
         registrations: &mut Registrations,
-        resources: &mut RecordingResources<'_>,
+        resources: &dyn Resources,
     ) {
         for annotation in annotations {
             let (x, y) = camera.coordinate_point(annotation.coordinate());
@@ -2851,6 +3069,16 @@ fn tile_image_rect(camera: Camera, tile: TileId, size: u32) -> Rect {
     let (x0, y0) = camera.tile_point(tile, size, 0.0, 0.0);
     let (x1, y1) = camera.tile_point(tile, size, extent, extent);
     Rect::new(x0, y0, x1, y1)
+}
+
+/// The screen rect of a raster tile's image, following the live camera.
+fn image_rect(
+    live: &Binding<Camera>,
+    tile: TileId,
+    size: u32,
+) -> impl nami::Signal<Output = Rect> + use<> {
+    live.clone()
+        .map(move |camera| tile_image_rect(camera, tile, size))
 }
 
 #[allow(
@@ -3835,12 +4063,15 @@ mod chrome_tests {
 mod tests {
     use std::num::NonZeroU32;
 
+    use cherenkov::{FrameTime, Offscreen, OffscreenFormat, Surface};
+    use cherenkov_cpu::{Raster, RasterConfig};
+    use cherenkov_gpu::{Gpu, GpuConfig};
     use kurbo::{PathEl, Point};
     use num_traits::ToPrimitive as _;
     use waterui_core::view::ConfigurableView as _;
-    use waterui_graphics::cherenkov_cpu::Raster;
-    use waterui_graphics::cherenkov_gpu::Gpu;
-    use waterui_graphics::{OffscreenRenderer, OffscreenSize};
+    use waterui_graphics::{
+        GpuRuntime, OffscreenImage, OffscreenSize, RedrawHandle, gpu::GpuContentRenderer,
+    };
     use waterui_map::Map;
     use waterui_url::Url;
 
@@ -4098,17 +4329,12 @@ mod tests {
             fingerprint: 0,
         };
         let prepared = PreparedMap {
-            chrome: MapChrome {
-                compass: MapVisibility::Hidden,
-                scale: MapVisibility::Hidden,
-            },
             style: style.clone(),
             camera: Camera::new(region, viewport, 0, 22),
             tiles: SourceTiles::default(),
-            annotations: Vec::new(),
-            location: None,
             painter: MapPainter::default(),
             registrations: Registrations::default(),
+            label_registrations: Registrations::default(),
             recorded: BTreeMap::new(),
             cache: Rc::new(RefCell::new(TileCache::new(1_000_000))),
         };
@@ -4323,6 +4549,7 @@ mod tests {
     }
 
     fn fixture_prepared(
+        source: &str,
         region: Region,
         style: &MapStyle,
         tiles: Vec<Arc<VectorTile>>,
@@ -4336,21 +4563,169 @@ mod tests {
             style: style.clone(),
             camera: Camera::new(region, viewport, 0, 22),
             tiles: SourceTiles {
-                vector: BTreeMap::from([(String::from("basemap"), tiles)]),
+                vector: BTreeMap::from([(String::from(source), tiles)]),
                 raster: BTreeMap::new(),
                 dem: BTreeMap::new(),
             },
-            annotations: Vec::new(),
-            location: None,
-            chrome: MapChrome {
-                compass: MapVisibility::Hidden,
-                scale: MapVisibility::Hidden,
-            },
             painter: MapPainter::default(),
             registrations: Registrations::default(),
+            label_registrations: Registrations::default(),
             recorded: BTreeMap::new(),
             cache: Rc::clone(cache),
         }
+    }
+
+    /// A map scene showing `prepared`, whose camera `region` drives and whose
+    /// loads never start: the prepared map is already in place.
+    fn fixture_scene(
+        region: &Binding<Region>,
+        style: &MapStyle,
+        prepared: PreparedMap,
+        pixels: (u32, u32),
+    ) -> MapScene {
+        let config = Map::new(region.clone())
+            .style(waterui_map::MapStyle::Standard)
+            .is_interactive(false)
+            .shows_compass(false)
+            .shows_scale(false)
+            .config();
+        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let initial = region.snapshot();
+        let scene = MapScene::with_viewport_signal(
+            &config,
+            options,
+            binding(None),
+            Computed::constant(initial),
+            Computed::constant(false),
+        );
+        {
+            let mut state = scene.state.borrow_mut();
+            state.style = Some(style.clone());
+            state.prepared = Some(prepared);
+            state.prepared_generation = Some(1);
+            state.request = Some(RequestKey {
+                region: initial,
+                viewport: Viewport {
+                    width: pixels.0,
+                    height: pixels.1,
+                },
+            });
+        }
+        scene
+    }
+
+    /// A map retained on an offscreen surface of `engine`.
+    struct Harness<B: Backend + Uploads<Rgba8>> {
+        engine: Engine<B>,
+        retained: Retained<B>,
+        scene: MapScene,
+        region: Binding<Region>,
+        cache: Rc<RefCell<TileCache>>,
+        pixels: (u32, u32),
+        /// The style source the tiles belong to.
+        source: &'static str,
+    }
+
+    impl<B: Backend + Uploads<Rgba8>> Harness<B> {
+        fn new(
+            engine: Engine<B>,
+            style: &MapStyle,
+            source: &'static str,
+            tiles: Vec<Arc<VectorTile>>,
+            region: Region,
+        ) -> Self {
+            let pixels = (800, 600);
+            let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
+            let live = binding(region);
+            let prepared = fixture_prepared(source, region, style, tiles, &cache);
+            let scene = fixture_scene(&live, style, prepared, pixels);
+            let surface: Surface<B> = engine
+                .surface(Offscreen::new(pixels, OffscreenFormat::LinearF16), || {})
+                .expect("an offscreen surface must open");
+            surface
+                .display(cherenkov::Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                })
+                .expect("the surface must accept its display scale");
+            Self {
+                engine,
+                retained: Retained::new(surface),
+                scene,
+                region: live,
+                cache,
+                pixels,
+                source,
+            }
+        }
+
+        /// One frame: brings the recording up to date and renders it.
+        fn frame(&mut self) -> bool {
+            let animating = self
+                .retained
+                .update(&self.engine, &mut self.scene, self.pixels, 1.0);
+            self.engine
+                .render(FrameTime::now())
+                .expect("the frame must render");
+            animating
+        }
+
+        /// The last rendered frame.
+        fn image(&self) -> OffscreenImage {
+            OffscreenImage::from_readback(
+                &self
+                    .retained
+                    .surface()
+                    .readback()
+                    .expect("the surface must read back"),
+            )
+        }
+
+        /// Replaces the prepared map, as a settled load does.
+        fn prepare(&self, tiles: Vec<Arc<VectorTile>>, region: Region, generation: u64) {
+            let style = self.scene.state.borrow().style.clone().expect("a style");
+            let mut state = self.scene.state.borrow_mut();
+            state.prepared = Some(fixture_prepared(
+                self.source,
+                region,
+                &style,
+                tiles,
+                &self.cache,
+            ));
+            state.prepared_generation = Some(generation);
+        }
+    }
+
+    fn cpu_harness(tiles: Vec<Arc<VectorTile>>, region: Region) -> Harness<Raster> {
+        let engine = Engine::<Raster>::new(RasterConfig::default()).expect("a CPU engine");
+        Harness::new(engine, &fixture_style(), "basemap", tiles, region)
+    }
+
+    /// The synthetic city of [`crate::visual_fixture`] around `region`, on the
+    /// GPU backend.
+    fn city_harness(region: Region) -> Harness<Gpu> {
+        let engine = Engine::<Gpu>::new(GpuConfig::default()).expect("a GPU engine");
+        let camera = Camera::new(
+            region,
+            Viewport {
+                width: 800,
+                height: 600,
+            },
+            0,
+            22,
+        );
+        let tiles = camera
+            .visible_tiles(f64::from(TILE_OVERSCAN_PIXELS), 0, 14, TILE_SIZE)
+            .into_iter()
+            .map(crate::visual_fixture::tile)
+            .collect();
+        Harness::new(
+            engine,
+            &crate::visual_fixture::style(),
+            "city",
+            tiles,
+            region,
+        )
     }
 
     /// Panning to a partly overlapping tile set must record only the tiles
@@ -4360,10 +4735,6 @@ mod tests {
     /// tiles.
     #[test]
     fn panning_records_only_newly_visible_tiles() {
-        let renderer = OffscreenRenderer::<Raster>::cpu().expect("a CPU engine");
-        let size = OffscreenSize::try_from_pixels(800, 600).expect("non-zero size");
-        let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
-        let style = fixture_style();
         let tiles_a = vec![
             fixture_tile(
                 TileId {
@@ -4382,21 +4753,16 @@ mod tests {
                 3,
             ),
         ];
-        let mut prepared =
-            fixture_prepared(manhattan_region(0.030, 0.050), &style, tiles_a, &cache);
-        renderer
-            .render(&mut prepared, size, 1.0)
-            .expect("first frame must render");
+        let mut harness = cpu_harness(tiles_a, manhattan_region(0.030, 0.050));
+        harness.frame();
         // 2 tiles × 3 recorded layer kinds (fill, line, circle); symbols
         // shape into the label cache, never the picture cache.
-        assert_eq!(cache.borrow().pictures.recordings, 6);
-        let after_first = cache.borrow().pictures.recordings;
+        assert_eq!(harness.cache.borrow().pictures.recordings, 6);
+        let after_first = harness.cache.borrow().pictures.recordings;
 
-        renderer
-            .render(&mut prepared, size, 1.0)
-            .expect("a same-camera repaint must render");
+        harness.frame();
         assert_eq!(
-            cache.borrow().pictures.recordings,
+            harness.cache.borrow().pictures.recordings,
             after_first,
             "a repaint at the same camera records nothing"
         );
@@ -4420,12 +4786,10 @@ mod tests {
                 3,
             ),
         ];
-        let mut panned = fixture_prepared(manhattan_region(0.040, 0.060), &style, tiles_b, &cache);
-        renderer
-            .render(&mut panned, size, 1.0)
-            .expect("the panned frame must render");
+        harness.prepare(tiles_b, manhattan_region(0.040, 0.060), 2);
+        harness.frame();
         assert_eq!(
-            cache.borrow().pictures.recordings - after_first,
+            harness.cache.borrow().pictures.recordings - after_first,
             3,
             "only the new tile's three layer pictures may record"
         );
@@ -4436,10 +4800,6 @@ mod tests {
     /// is evaluated or shaped twice.
     #[test]
     fn repainting_within_tiles_does_not_reshape_labels() {
-        let renderer = OffscreenRenderer::<Raster>::cpu().expect("a CPU engine");
-        let size = OffscreenSize::try_from_pixels(800, 600).expect("non-zero size");
-        let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
-        let style = fixture_style();
         let region = manhattan_region(0.030, 0.050);
         let camera = Camera::new(
             region,
@@ -4452,30 +4812,178 @@ mod tests {
         );
         let tile_id = camera.visible_tiles(0.0, 0, 22, TILE_SIZE)[0];
         let tiles = vec![fixture_tile(tile_id, 3)];
-        let mut prepared = fixture_prepared(region, &style, tiles, &cache);
-        renderer
-            .render(&mut prepared, size, 1.0)
-            .expect("the first frame must render");
-        let recordings = cache.borrow().labels.recordings;
+        let mut harness = cpu_harness(tiles, region);
+        harness.frame();
+        let recordings = harness.cache.borrow().labels.recordings;
         assert!(
             recordings > 0,
             "the first frame shapes each visible symbol feature once"
         );
 
-        prepared.camera = Camera::new(
-            manhattan_region(0.031, 0.051),
-            prepared.camera.viewport,
-            0,
-            22,
-        );
-        renderer
-            .render(&mut prepared, size, 1.0)
-            .expect("the moved-camera repaint must render");
+        harness.region.set(manhattan_region(0.031, 0.051));
+        harness.frame();
         assert_eq!(
-            cache.borrow().labels.recordings,
+            harness.cache.borrow().labels.recordings,
             recordings,
             "a repaint within the same tiles projects cached labels and shapes nothing"
         );
+    }
+
+    /// A camera move is state of the retained recording: the tiles follow the
+    /// camera signal in place, so the surface is neither recorded whole again
+    /// nor does any tile picture record again.
+    #[test]
+    fn a_camera_move_follows_in_place() {
+        let region = manhattan_region(0.030, 0.050);
+        let camera = Camera::new(
+            region,
+            Viewport {
+                width: 800,
+                height: 600,
+            },
+            0,
+            22,
+        );
+        let tile_id = camera.visible_tiles(0.0, 0, 22, TILE_SIZE)[0];
+        let mut harness = cpu_harness(vec![fixture_tile(tile_id, 3)], region);
+        harness.frame();
+        assert_eq!(harness.retained.installs, 1);
+        let pictures = harness.cache.borrow().pictures.recordings;
+
+        let panned = Region::new(
+            Coordinate::from_degrees(40.7620, -73.9800).expect("valid coordinate"),
+            0.030,
+            0.050,
+        );
+        harness.region.set(panned);
+        harness.frame();
+
+        assert_eq!(
+            harness.retained.installs, 1,
+            "a pan must not record the surface whole again"
+        );
+        assert_eq!(
+            harness.cache.borrow().pictures.recordings,
+            pictures,
+            "a pan must not record a tile again"
+        );
+        let (_, drawn) = harness.retained.installed.as_ref().expect("installed");
+        assert_eq!(
+            drawn.as_ref().expect("drawn").camera.snapshot().region,
+            panned,
+            "the recording's camera is the live one"
+        );
+    }
+
+    /// The map renders the synthetic city before and after a pan and a zoom,
+    /// each a camera move on the one retained recording. The PNGs go to
+    /// `<temp dir>/waterui_map_gpu/` for review.
+    #[test]
+    fn retained_map_exports_camera_moves() {
+        let out = std::env::temp_dir().join("waterui_map_gpu");
+        std::fs::create_dir_all(&out).expect("the output directory must be created");
+        let region = manhattan_region(0.030, 0.050);
+        let mut harness = city_harness(region);
+        harness.frame();
+        harness
+            .image()
+            .save_png(out.join("after_initial.png"))
+            .expect("the initial frame must be saved");
+        let panned = Region::new(
+            Coordinate::from_degrees(40.7580 + 0.004, -73.9855 + 0.009).expect("valid"),
+            0.030,
+            0.050,
+        );
+        harness.region.set(panned);
+        harness.frame();
+        harness
+            .image()
+            .save_png(out.join("after_panned.png"))
+            .expect("the panned frame must be saved");
+        harness
+            .region
+            .set(Region::new(panned.center, 0.020, 0.0333));
+        harness.frame();
+        harness
+            .image()
+            .save_png(out.join("after_zoomed.png"))
+            .expect("the zoomed frame must be saved");
+        assert_eq!(
+            harness.retained.installs, 1,
+            "pan and zoom follow the camera without recording the surface again"
+        );
+    }
+
+    /// The glue: a host frame runs the UI half, which renders the surface,
+    /// and the content presents it into the host's texture.
+    #[test]
+    fn the_host_presents_the_retained_surface() {
+        use waterui_graphics::wgpu;
+
+        let runtime = pollster::block_on(GpuRuntime::new()).expect("a GPU runtime");
+        let region = manhattan_region(0.030, 0.050);
+        let tile_id = Camera::new(
+            region,
+            Viewport {
+                width: 64,
+                height: 64,
+            },
+            0,
+            22,
+        )
+        .visible_tiles(0.0, 0, 22, TILE_SIZE)[0];
+        let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
+        let style = fixture_style();
+        let prepared = fixture_prepared(
+            "basemap",
+            region,
+            &style,
+            vec![fixture_tile(tile_id, 3)],
+            &cache,
+        );
+        let scene = fixture_scene(&binding(region), &style, prepared, (64, 64));
+        let shared = scene.shared();
+        let mut view = host::view(scene);
+        let size = OffscreenSize::try_from_pixels(64, 64).expect("non-zero size");
+        let mut renderer = GpuContentRenderer::new(
+            &runtime,
+            runtime.context(),
+            view.take_engine_content(),
+            size,
+            RedrawHandle::new(|| {}),
+        )
+        .expect("the content renderer must open");
+        let context = runtime.context();
+        let target = context.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("host target"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let display = cherenkov::Display {
+            scale: 1.0,
+            headroom: 1.0,
+        };
+        // The first frame sets the content up and tells the UI half the
+        // extent; the next ones render the surface it presents.
+        for _ in 0..3 {
+            view.frame();
+            renderer
+                .present(&target, display, FrameTime::now())
+                .expect("the host frame must present");
+        }
+        assert_eq!(shared.rendered_pixels(), Some((64, 64)));
     }
 
     /// No batched path may outgrow a single tile's content: batching stops
@@ -4483,10 +4991,6 @@ mod tests {
     /// by the densest tile, not by the viewport.
     #[test]
     fn the_largest_path_is_bounded_by_one_tile() {
-        let renderer = OffscreenRenderer::<Raster>::cpu().expect("a CPU engine");
-        let size = OffscreenSize::try_from_pixels(800, 600).expect("non-zero size");
-        let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
-        let style = fixture_style();
         // Two tiles with deliberately different content sizes, so a merged
         // batch would be far larger than either tile's own.
         let tiles = vec![
@@ -4507,12 +5011,10 @@ mod tests {
                 2,
             ),
         ];
-        let mut prepared = fixture_prepared(manhattan_region(0.030, 0.050), &style, tiles, &cache);
-        renderer
-            .render(&mut prepared, size, 1.0)
-            .expect("the frame must render");
+        let mut harness = cpu_harness(tiles, manhattan_region(0.030, 0.050));
+        harness.frame();
 
-        let cache = cache.borrow();
+        let cache = harness.cache.borrow();
         let largest = cache
             .pictures
             .entries
@@ -4530,46 +5032,60 @@ mod tests {
         );
     }
 
-    /// The frozen base picture replays under a camera transform — the same
-    /// path a pan gesture animates — so rendering the prepared map offscreen
-    /// exercises the whole port: tile decode, resource registration and the
-    /// Cherenkov engine. The recorded content is backend-agnostic: the GPU
-    /// backend renders the city-scale scene on the real adapter, and the CPU
-    /// backend exports the same recording beside it for visual comparison.
-    /// The PNGs go to `/tmp/waterui_map_gpu/`.
+    /// `prepared` drawn once on `engine` at `pixels`.
+    fn render_prepared<B: Backend + Uploads<Rgba8>>(
+        engine: &Engine<B>,
+        prepared: PreparedMap,
+        region: Region,
+        pixels: (u32, u32),
+    ) -> OffscreenImage {
+        let style = prepared.style.clone();
+        let mut scene = fixture_scene(&binding(region), &style, prepared, pixels);
+        let surface: Surface<B> = engine
+            .surface(Offscreen::new(pixels, OffscreenFormat::LinearF16), || {})
+            .expect("an offscreen surface must open");
+        surface
+            .display(cherenkov::Display {
+                scale: 1.0,
+                headroom: 1.0,
+            })
+            .expect("the surface must accept its display scale");
+        let mut retained = Retained::new(surface);
+        retained.update(engine, &mut scene, pixels, 1.0);
+        engine
+            .render(FrameTime::now())
+            .expect("the frame must render");
+        OffscreenImage::from_readback(
+            &retained
+                .surface()
+                .readback()
+                .expect("the surface must read back"),
+        )
+    }
+
+    /// The loaded Manhattan map renders on the CPU and the GPU backend from
+    /// the same recording. The PNGs go to `/tmp/waterui_map_gpu/`.
     #[test]
     #[ignore = "requires network access and a real tile provider"]
     fn cached_camera_pipeline_exports_manhattan() {
         let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-        let width = 1_600;
-        let height = 1_200;
+        let (width, height) = (1_600, 1_200);
         let region = manhattan_region(0.030, 0.050);
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let output_dir = std::path::Path::new("/tmp/waterui_map_gpu");
         std::fs::create_dir_all(output_dir).expect("cached map output directory must be created");
-        let size =
-            OffscreenSize::try_from_pixels(width, height).expect("visual size must be non-zero");
 
-        // A PreparedMap records its base picture on the first render through
-        // that render's resource table, so each backend needs its own prepared
-        // scene: the CPU export first, then the GPU render.
-        let mut prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
+        let prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
             .expect("OpenFreeMap Manhattan scene must load");
-        let cpu_renderer =
-            OffscreenRenderer::<Raster>::cpu().expect("cached map visual requires an engine");
-        cpu_renderer
-            .render(&mut prepared, size, 1.0)
-            .expect("cached map camera replay must render on the CPU backend")
+        let cpu = Engine::<Raster>::new(RasterConfig::default()).expect("a CPU engine");
+        render_prepared(&cpu, prepared, region, (width, height))
             .save_png(output_dir.join("cached_camera_cpu.png"))
             .expect("cached map CPU output must be saved");
 
-        let mut prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
+        let prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
             .expect("OpenFreeMap Manhattan scene must load");
-        let gpu_renderer =
-            OffscreenRenderer::<Gpu>::new().expect("cached map visual requires a GPU engine");
-        gpu_renderer
-            .render(&mut prepared, size, 1.0)
-            .expect("cached map camera replay must render on the GPU backend")
+        let gpu = Engine::<Gpu>::new(GpuConfig::default()).expect("a GPU engine");
+        render_prepared(&gpu, prepared, region, (width, height))
             .save_png(output_dir.join("cached_camera.png"))
             .expect("cached map GPU output must be saved");
     }

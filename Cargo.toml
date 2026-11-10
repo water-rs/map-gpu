@@ -32,7 +32,13 @@ multiple_crate_versions = "allow"
 default = []
 
 [dependencies]
+arc-swap = "1"
 blocking = "1.7.0"
+# The map records into its own retained Cherenkov surface, so the engine is a
+# direct dependency; both are the framework's, resolved by the patch table
+# below to the same commit as `waterui-graphics`.
+cherenkov = "0.0.0"
+cherenkov-gpu = "0.0.0"
 executor-core = "0.7.1"
 futures = "0.3"
 futures-lite = "2.6"
@@ -79,9 +85,8 @@ zenwave = { version = "0.6.1", default-features = false }
 [dev-dependencies]
 num-traits = { version = "0.2", default-features = false }
 pollster = "1.0"
-# The `gpu` and `cpu` features add the `OffscreenRenderer` backends the
-# offscreen snapshot test renders through (Metal GPU and CPU rasterizer).
-waterui-graphics = { version = "0.5.0", features = ["cpu", "gpu"] }
+# The rendering tests draw the retained surface on the CPU rasterizer.
+cherenkov-cpu = "0.0.0"
 # `tests/map_semantics.rs` mounts through `waterui-testing` on the pinned
 # Hydrolysis host.
 waterui = "0.5.0"
