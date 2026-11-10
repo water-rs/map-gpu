@@ -42,6 +42,7 @@ use crate::render::{MapScene, Retained};
 /// The host's device handles, as `setup` received them.
 #[derive(Debug)]
 struct Handles {
+    instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -163,6 +164,7 @@ impl GpuContent for MapContent {
             .redraw
             .store(Some(Arc::new(gpu.redraw().clone())));
         self.shared.device.store(Some(Arc::new(Handles {
+            instance: gpu.instance().clone(),
             adapter: gpu.adapter().clone(),
             device: gpu.device().clone(),
             queue: gpu.queue().clone(),
@@ -248,12 +250,7 @@ impl Drawing {
     fn new(device: Arc<Handles>, view: View, redraw: Option<Arc<RedrawHandle>>) -> Self {
         let engine = Engine::<Gpu>::new(GpuConfig {
             device: Some(SharedDevice {
-                // The engine takes the instance for window targets only; this
-                // surface renders to a texture on the host's device.
-                instance: wgpu::Instance::new(wgpu::InstanceDescriptor {
-                    backends: wgpu::Backends::empty(),
-                    ..wgpu::InstanceDescriptor::new_without_display_handle()
-                }),
+                instance: device.instance.clone(),
                 adapter: device.adapter.clone(),
                 device: device.device.clone(),
                 queue: device.queue.clone(),
