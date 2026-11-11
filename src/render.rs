@@ -29,7 +29,10 @@ use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use waterui_core::animation::Animation;
-use waterui_graphics::{GesturePhase, GpuContentView, ScrollPhase, ScrollUnit, SurfaceInputEvent};
+use waterui_graphics::{
+    gpu::GpuContentView,
+    input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceInputEvent},
+};
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
 
 use crate::{
@@ -4070,7 +4073,8 @@ mod tests {
     use num_traits::ToPrimitive as _;
     use waterui_core::view::ConfigurableView as _;
     use waterui_graphics::{
-        GpuRuntime, OffscreenImage, OffscreenSize, RedrawHandle, gpu::GpuContentRenderer,
+        OffscreenImage, OffscreenSize,
+        gpu::{GpuContentRenderer, GpuRuntime, RedrawHandle},
     };
     use waterui_map::Map;
     use waterui_url::Url;
@@ -4918,7 +4922,7 @@ mod tests {
     /// and the content presents it into the host's texture.
     #[test]
     fn the_host_presents_the_retained_surface() {
-        use waterui_graphics::wgpu;
+        use waterui_graphics::gpu::wgpu;
 
         let runtime = pollster::block_on(GpuRuntime::new()).expect("a GPU runtime");
         let region = manhattan_region(0.030, 0.050);
