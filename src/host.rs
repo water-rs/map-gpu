@@ -34,7 +34,8 @@ use cherenkov_gpu::{
     interop::{SharedDevice, TextureTarget, shader_module},
 };
 use waterui_graphics::{
-    Context, Frame, GpuContent, GpuContentView, RedrawHandle, SurfaceInputEvent, wgpu,
+    gpu::{Context, Frame, GpuContent, GpuContentView, RedrawHandle, wgpu},
+    input::SurfaceInputEvent,
 };
 
 use crate::render::{MapScene, Retained};
