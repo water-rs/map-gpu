@@ -155,16 +155,12 @@ impl VectorTile {
     reason = "MapLibre expressions use f64 numbers, matching JavaScript number semantics for MVT integer properties"
 )]
 fn style_feature(feature: &feature::Feature) -> StyleFeature {
-    let properties = feature
-        .properties
-        .as_ref()
-        .map(|properties| {
-            properties
-                .iter()
-                .map(|(key, value)| (key.clone(), style_value(value)))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
+    let properties = feature.properties.as_ref().map_or_default(|properties| {
+        properties
+            .iter()
+            .map(|(key, value)| (key.clone(), style_value(value)))
+            .collect::<BTreeMap<_, _>>()
+    });
     StyleFeature {
         id: feature.id.map(|id| StyleValue::Number(id as f64)),
         properties,

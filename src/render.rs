@@ -3235,8 +3235,7 @@ fn geometry_points(geometry: &Geometry<f32>) -> Vec<Coord<f32>> {
         | Geometry::Triangle(_)
         | Geometry::GeometryCollection(_) => geometry
             .bounding_rect()
-            .map(|bounds| vec![bounds.center()])
-            .unwrap_or_default(),
+            .map_or_default(|bounds| vec![bounds.center()]),
     }
 }
 

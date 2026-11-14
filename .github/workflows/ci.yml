@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
     branches: ["**"]
 
@@ -20,8 +20,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  bump:
+    # release-plz bump pull requests (`release-plz-*` heads) change only
+    # versions and the changelog, so this job skips itself and every other
+    # job skips through `needs: bump`.
+    name: Not a release bump
+    if: ${{ !startsWith(github.head_ref, 'release-plz-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME} is not a release bump"
+
   test:
     name: Test / ${{ matrix.os }}
+    needs: bump
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -86,6 +97,7 @@ jobs:
 
   lint:
     name: Lint
+    needs: bump
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,6 +112,7 @@ jobs:
 
   msrv:
     name: MSRV
+    needs: bump
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -134,3 +147,22 @@ jobs:
       - name: Show the toolchain this job builds with
         run: rustc --version && cargo --version
       - run: cargo check --workspace --all-features
+
+  result:
+    # The single check the `main` ruleset requires: it passes when every
+    # job passed or was skipped (release-plz bump pull requests skip all).
+    name: CI result
+    if: always()
+    needs: [bump, test, lint, msrv]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        env:
+          RESULTS: ${{ join(needs.*.result, ', ') }}
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "job results: $RESULTS"
+          if [ "$FAILED" = "true" ]; then
+            echo "::error::one or more jobs failed or were cancelled"
+            exit 1
+          fi
