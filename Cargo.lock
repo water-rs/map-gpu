@@ -7395,7 +7395,7 @@ source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b97
 [[patch.unused]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=dev#76eb42ae9e44618f929d7634c844bd85d2dd268e"
+source = "git+https://github.com/water-rs/image?branch=main#0988ed3225cb941672deb7881665b81182ee50af"
 
 [[patch.unused]]
 name = "waterui-media"
