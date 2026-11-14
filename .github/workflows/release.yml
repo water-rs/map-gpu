@@ -38,7 +38,7 @@ jobs:
         with:
           tool: release-plz
           git: https://github.com/water-rs/release-plz
-          rev: cc554a52e97e0ee359e45c7801d770895247cf27
+          rev: 3f421b280f377c2899f3a3750b4ad7a4f7e613c1
           locked: true
       - uses: release-plz/git-config@v0.1.2
         env:
@@ -78,7 +78,7 @@ jobs:
         with:
           tool: release-plz
           git: https://github.com/water-rs/release-plz
-          rev: cc554a52e97e0ee359e45c7801d770895247cf27
+          rev: 3f421b280f377c2899f3a3750b4ad7a4f7e613c1
           locked: true
       - uses: release-plz/git-config@v0.1.2
         env:
