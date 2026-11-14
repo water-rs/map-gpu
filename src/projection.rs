@@ -1,3 +1,4 @@
+use kurbo::Affine;
 use waterui_map::{Coordinate, Region};
 
 pub const TILE_SIZE: u32 = 512;
@@ -159,6 +160,30 @@ impl Camera {
     pub fn meters_to_pixels(self, latitude: f64, meters: f64) -> f64 {
         meters * world_size(self.zoom)
             / (EARTH_CIRCUMFERENCE * latitude.to_radians().cos().abs().max(0.01))
+    }
+
+    /// The affine mapping one tile's recording space onto the screen under
+    /// this camera.
+    ///
+    /// Tile pictures are recorded in a tile-local square `TILE_SIZE` units on
+    /// a side, so this is a uniform scale of `2^(zoom - tile.z)` plus the
+    /// translation that lands the tile's origin on screen.
+    pub fn tile_transform(self, tile: TileId) -> Affine {
+        let scale = (self.zoom - f64::from(tile.z)).exp2();
+        Affine::new([
+            scale,
+            0.0,
+            0.0,
+            scale,
+            (f64::from(tile.x) * f64::from(TILE_SIZE)).mul_add(
+                scale,
+                f64::from(self.viewport.width).mul_add(0.5, -self.center_world.0),
+            ),
+            (f64::from(tile.y) * f64::from(TILE_SIZE)).mul_add(
+                scale,
+                f64::from(self.viewport.height).mul_add(0.5, -self.center_world.1),
+            ),
+        ])
     }
 
     /// Extra zoom levels a source needs because its tiles are smaller than the

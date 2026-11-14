@@ -1,12 +1,8 @@
 use std::{
-    cell::RefCell,
-    collections::{BTreeMap, HashSet},
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
+    sync::Arc,
 };
 
 // `std::time::Instant` panics on `wasm32-unknown-unknown`; `web_time` routes
@@ -16,29 +12,34 @@ use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
+use cherenkov::{
+    Backend, Draw, Engine, Fixed, Font, FontId, FontSource, Glyph, GlyphRun, GlyphStyle, Group,
+    Image, ImageData, Paint, Picture, Recorder, Region as RecordRegion, ResourceError, Rgba8,
+    Sampling, ShapeData, Srgb, Surface, Uploads,
+};
 use executor_core::spawn_local;
 use futures::{StreamExt as _, future::join_all, stream};
-use geo::{BoundingRect as _, Simplify as _};
-use geo_types::{Coord, Geometry, LineString, Polygon};
-use kurbo::{Affine, BezPath, Circle, Rect, Shape as _, Stroke};
+use geo::{BooleanOps as _, BoundingRect as _, Simplify as _};
+use geo_types::{Coord, Geometry, LineString, MultiLineString, MultiPolygon, Polygon};
+use kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, Shape as _, Stroke};
 use lru::LruCache;
 use maplibre_expr::{EvaluationContext, Value, evaluate};
-use nami::{Binding, Computed, Signal as _, binding, watcher::BoxWatcherGuard};
+use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
 use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
-use peniko::{Brush, Color, Fill, StyleRef};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
-use shaderloom::CompiledShader;
 use waterui_core::animation::Animation;
 use waterui_graphics::{
-    DeviceLoss, Glyph, GlyphRun, GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent,
-    SceneInvalidator, SceneRecording, VelloScene2D, gpu_surface::GestureState,
+    gpu::GpuContentView,
+    input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceInputEvent},
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
 
 use crate::{
-    MapGestureController, MapGpuOptions, MapLoadError, network,
-    projection::{Camera, TILE_OVERSCAN_PIXELS, TileId, Viewport},
+    MapGestureController, MapGpuOptions, MapLoadError,
+    host::{self, Shared},
+    network,
+    projection::{Camera, TILE_OVERSCAN_PIXELS, TILE_SIZE, TileId, Viewport},
     style::{LayerKind, MapStyle, SourceKind, StyleLayer, TileSource},
     tile::{DemTile, RasterTile, TileFeature, VectorTile},
     unblock,
@@ -84,11 +85,9 @@ enum LoadedTiles {
     Dem(Vec<Arc<DemTile>>),
 }
 
-const MAP_CAMERA_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/map_camera.rs"));
 const MAP_BACKGROUND: [f32; 4] = [0.973, 0.957, 0.941, 1.0];
-const MAP_TEXTURE_MARGIN: u32 = TILE_OVERSCAN_PIXELS;
-const MAP_RASTER_TILE_SIZE: u32 = 1_024;
-const MAP_RASTER_TILE_GUTTER: u32 = 2;
+/// A colour in sRGB: the space every `MapLibre` style property is authored in.
+type Color = cherenkov::Color<Srgb>;
 /// Inset of the map's own chrome (compass, scale bar) from the viewport edge.
 const CHROME_INSET: f64 = 12.0;
 const COMPASS_RADIUS: f64 = 17.0;
@@ -157,23 +156,10 @@ fn format_scale_distance(meters: f64) -> String {
 
 #[expect(
     clippy::cast_precision_loss,
-    reason = "wgpu viewport and texture uniforms are represented as f32"
+    reason = "viewport and tile extents are represented as f32"
 )]
 const fn gpu_scalar(value: u32) -> f32 {
     value as f32
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RasterTileLayout {
-    origin: (u32, u32),
-    texture_size: (u32, u32),
-    scene_origin: (f64, f64),
-}
-
-#[derive(Clone)]
-struct PreparedRasterTile {
-    scene: vello::Scene,
-    layout: RasterTileLayout,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -226,20 +212,25 @@ impl<T: CachedTile> TileMap<T> {
         self.tiles.get(&(source.to_owned(), id)).cloned()
     }
 
-    fn insert(&mut self, source: String, tile: &Arc<T>) {
+    /// Returns the `(source, tile)` key a replaced entry used to occupy, so
+    /// the cache can release pictures recorded from the old payload.
+    fn insert(&mut self, source: String, tile: &Arc<T>) -> Option<(String, TileId)> {
         let key = (source, tile.id());
-        if let Some(replaced) = self.tiles.put(key, Arc::clone(tile)) {
+        let replaced = self.tiles.put(key.clone(), Arc::clone(tile));
+        if let Some(replaced) = &replaced {
             self.bytes = self.bytes.saturating_sub(tile_bytes(replaced.byte_len()));
         }
         self.bytes = self.bytes.saturating_add(tile_bytes(tile.byte_len()));
+        replaced.map(|_| key)
     }
 
-    /// Drops the least recently used tile, returning the bytes it freed.
-    fn evict_lru(&mut self) -> Option<u64> {
-        let (_, evicted) = self.tiles.pop_lru()?;
+    /// Drops the least recently used tile, returning the bytes it freed and
+    /// the key it held, so dependent pictures can be released with it.
+    fn evict_lru(&mut self) -> Option<(u64, (String, TileId))> {
+        let (key, evicted) = self.tiles.pop_lru()?;
         let freed = tile_bytes(evicted.byte_len());
         self.bytes = self.bytes.saturating_sub(freed);
-        Some(freed)
+        Some((freed, key))
     }
 }
 
@@ -247,11 +238,233 @@ fn tile_bytes(byte_len: usize) -> u64 {
     u64::try_from(byte_len).unwrap_or(u64::MAX)
 }
 
+/// Identifies layer-granular content derived from one tile — a recorded
+/// picture or a shaded terrain image — by style fingerprint, source, tile
+/// and layer. The fingerprint pins the content so a style change never
+/// replays what another document produced.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TilePictureKey {
+    fingerprint: u64,
+    source: String,
+    tile: TileId,
+    layer: usize,
+}
+
+/// The feature-granular variant of [`TilePictureKey`]: one shaped symbol
+/// label per tile feature.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TileFeatureKey {
+    fingerprint: u64,
+    source: String,
+    tile: TileId,
+    layer: usize,
+    feature: usize,
+}
+
+/// A derived-content key located by `(source, tile)`, so the content can be
+/// released with the decoded tile it was derived from.
+trait TileLocator {
+    /// The `(source, tile)` the keyed content was recorded from.
+    fn tile_locator(&self) -> (String, TileId);
+}
+
+impl TileLocator for TilePictureKey {
+    fn tile_locator(&self) -> (String, TileId) {
+        (self.source.clone(), self.tile)
+    }
+}
+
+impl TileLocator for TileFeatureKey {
+    fn tile_locator(&self) -> (String, TileId) {
+        (self.source.clone(), self.tile)
+    }
+}
+
+/// One style layer of one vector tile, recorded in the tile's
+/// `TILE_SIZE`-square local space.
+///
+/// `max_path_elements` is the largest single batched path in the picture —
+/// the number the per-tile batching bound is checked against.
+struct TilePicture {
+    picture: Picture,
+    byte_len: u64,
+    max_path_elements: usize,
+}
+
+impl std::fmt::Debug for TilePicture {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TilePicture")
+            .field("byte_len", &self.byte_len)
+            .field("max_path_elements", &self.max_path_elements)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A shaped run's camera-independent payload: the font the frame that emits
+/// it must still register, plus its glyph ids and positions in text space.
+struct LabelRun {
+    font: parley::FontData,
+    font_size: f32,
+    coords: Arc<[i16]>,
+    glyphs: Arc<[Glyph]>,
+}
+
+impl std::fmt::Debug for LabelRun {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LabelRun")
+            .field("font_size", &self.font_size)
+            .field("glyphs", &self.glyphs.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Everything a symbol feature needs that does not depend on the live
+/// camera: the evaluated text's shaped glyph runs and the anchor in tile
+/// extent units. One is recorded per (style fingerprint, source, tile,
+/// layer, feature); a frame only projects the anchor, runs collision
+/// placement and emits the cached runs.
+struct CachedLabel {
+    /// Anchor in the tile layer's extent units.
+    anchor: (f32, f32),
+    /// The line-following angle in radians (`symbol-placement: line`).
+    angle: f64,
+    /// `text-offset`, already scaled by the text size.
+    offset: (f64, f64),
+    /// `text-anchor` alignment name.
+    text_anchor: Box<str>,
+    padding: f64,
+    color: Color,
+    halo_color: Color,
+    halo_width: f64,
+    /// Laid-out text extent in points.
+    width: f64,
+    height: f64,
+    runs: Box<[LabelRun]>,
+    byte_len: u64,
+}
+
+impl CachedLabel {
+    const fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+}
+
+impl std::fmt::Debug for CachedLabel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CachedLabel")
+            .field("anchor", &self.anchor)
+            .field("runs", &self.runs)
+            .field("byte_len", &self.byte_len)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A [`DerivedCache`] entry: the value plus the bytes it is charged for.
+#[derive(Debug)]
+struct DerivedEntry<V> {
+    value: V,
+    byte_len: u64,
+}
+
+/// LRU map of content derived from decoded tiles — recorded pictures,
+/// shaped labels, shaded terrain — byte-accounted against the same budget
+/// as the decoded tiles they were drawn from.
+///
+/// `by_tile` reverses the key order so a decoded tile's eviction releases
+/// everything derived from it; `recordings` counts misses so a test can
+/// prove a repaint derives nothing again.
+#[derive(Debug)]
+struct DerivedCache<K: Eq + std::hash::Hash + Clone + TileLocator, V> {
+    entries: LruCache<K, DerivedEntry<V>>,
+    by_tile: HashMap<(String, TileId), Vec<K>>,
+    bytes: u64,
+    recordings: u64,
+}
+
+impl<K: Eq + std::hash::Hash + Clone + TileLocator, V> DerivedCache<K, V> {
+    fn new() -> Self {
+        Self {
+            entries: LruCache::unbounded(),
+            by_tile: HashMap::new(),
+            bytes: 0,
+            recordings: 0,
+        }
+    }
+
+    /// The content for `key`, deriving and byte-charging it on a miss.
+    fn get_or_insert(
+        &mut self,
+        key: &K,
+        byte_len: impl FnOnce(&V) -> u64,
+        derive: impl FnOnce() -> V,
+    ) -> &V {
+        if !self.entries.contains(key) {
+            let value = derive();
+            self.recordings = self.recordings.saturating_add(1);
+            let entry = DerivedEntry {
+                byte_len: byte_len(&value),
+                value,
+            };
+            self.bytes = self.bytes.saturating_add(entry.byte_len);
+            self.by_tile
+                .entry(key.tile_locator())
+                .or_default()
+                .push(key.clone());
+            self.entries.put(key.clone(), entry);
+        }
+        &self
+            .entries
+            .get(key)
+            .expect("content the cache just derived is present")
+            .value
+    }
+
+    /// Drops the least recently used entry, returning the freed bytes.
+    fn evict_lru(&mut self) -> Option<u64> {
+        let (key, evicted) = self.entries.pop_lru()?;
+        self.bytes = self.bytes.saturating_sub(evicted.byte_len);
+        let locator = key.tile_locator();
+        if let Some(keys) = self.by_tile.get_mut(&locator) {
+            keys.retain(|candidate| *candidate != key);
+            if keys.is_empty() {
+                self.by_tile.remove(&locator);
+            }
+        }
+        Some(evicted.byte_len)
+    }
+
+    /// Drops everything derived from one decoded tile.
+    fn release_tile(&mut self, source: &str, tile: TileId) {
+        let Some(keys) = self.by_tile.remove(&(source.to_owned(), tile)) else {
+            return;
+        };
+        for key in keys {
+            if let Some(entry) = self.entries.pop(&key) {
+                self.bytes = self.bytes.saturating_sub(entry.byte_len);
+            }
+        }
+    }
+
+    /// Drops every derived entry. Recorded display lists belong to the
+    /// engine that recorded them, so engine replacement clears pictures.
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.by_tile.clear();
+        self.bytes = 0;
+    }
+}
+
 #[derive(Debug)]
 struct TileCache {
     vector: TileMap<VectorTile>,
     raster: TileMap<RasterTile>,
     dem: TileMap<DemTile>,
+    pictures: DerivedCache<TilePictureKey, TilePicture>,
+    labels: DerivedCache<TileFeatureKey, Option<CachedLabel>>,
+    images: DerivedCache<TilePictureKey, Arc<[u8]>>,
     maximum_bytes: u64,
 }
 
@@ -261,6 +474,9 @@ impl TileCache {
             vector: TileMap::new(),
             raster: TileMap::new(),
             dem: TileMap::new(),
+            pictures: DerivedCache::new(),
+            labels: DerivedCache::new(),
+            images: DerivedCache::new(),
             maximum_bytes,
         }
     }
@@ -270,21 +486,53 @@ impl TileCache {
             .bytes
             .saturating_add(self.raster.bytes)
             .saturating_add(self.dem.bytes)
+            .saturating_add(self.pictures.bytes)
+            .saturating_add(self.labels.bytes)
+            .saturating_add(self.images.bytes)
     }
 
-    /// Evicts across all three payload caches until the shared budget holds.
+    /// Evicts across the payload caches and the derived-content caches until
+    /// the shared budget holds.
     ///
-    /// Each round drops the least recently used tile from the currently
-    /// largest cache, so one payload kind cannot starve the others.
+    /// Each round drops the least recently used entry from the currently
+    /// largest store, so one payload kind cannot starve the others. A vector
+    /// tile leaving the cache releases the pictures and labels recorded from
+    /// it; a DEM tile leaving releases its shaded images.
     fn enforce_budget(&mut self) {
         while self.bytes() > self.maximum_bytes {
-            let largest = self.vector.bytes.max(self.raster.bytes).max(self.dem.bytes);
+            let largest = self
+                .vector
+                .bytes
+                .max(self.raster.bytes)
+                .max(self.dem.bytes)
+                .max(self.pictures.bytes)
+                .max(self.labels.bytes)
+                .max(self.images.bytes);
             let freed = if largest == self.vector.bytes {
-                self.vector.evict_lru()
+                let outcome = self.vector.evict_lru();
+                if let Some((freed, (source, tile))) = outcome {
+                    self.pictures.release_tile(&source, tile);
+                    self.labels.release_tile(&source, tile);
+                    Some(freed)
+                } else {
+                    None
+                }
             } else if largest == self.raster.bytes {
-                self.raster.evict_lru()
+                self.raster.evict_lru().map(|(freed, _)| freed)
+            } else if largest == self.dem.bytes {
+                let outcome = self.dem.evict_lru();
+                if let Some((freed, (source, tile))) = outcome {
+                    self.images.release_tile(&source, tile);
+                    Some(freed)
+                } else {
+                    None
+                }
+            } else if largest == self.pictures.bytes {
+                self.pictures.evict_lru()
+            } else if largest == self.labels.bytes {
+                self.labels.evict_lru()
             } else {
-                self.dem.evict_lru()
+                self.images.evict_lru()
             };
             if freed.is_none() {
                 break;
@@ -293,7 +541,158 @@ impl TileCache {
     }
 }
 
-/// A fully loaded map scene ready for Vello encoding.
+/// A `Draw` target that accepts [`Fixed`] values for every operand the map
+/// painter emits.
+///
+/// [`StaticRecorder`][cherenkov::StaticRecorder] (a frozen picture) and
+/// [`Recorder`] (the retained recording) both satisfy these `From`s —
+/// `Fixed` is the `StaticRecorder`'s operand type itself and converts into
+/// the `Recorder`'s `Live` signal — so one painter records into either
+/// target.
+trait ReplayDraw:
+    Draw<
+        Value<ShapeData>: From<Fixed<ShapeData>>,
+        Value<Paint>: From<Fixed<Paint>>,
+        Value<Stroke>: From<Fixed<Stroke>>,
+        Value<GlyphRun>: From<Fixed<GlyphRun>>,
+        Value<Rect>: From<Fixed<Rect>>,
+        Value<Affine>: From<Fixed<Affine>>,
+        Value<Group>: From<Fixed<Group>>,
+    >
+{
+}
+
+impl<D> ReplayDraw for D where
+    D: Draw<
+            Value<ShapeData>: From<Fixed<ShapeData>>,
+            Value<Paint>: From<Fixed<Paint>>,
+            Value<Stroke>: From<Fixed<Stroke>>,
+            Value<GlyphRun>: From<Fixed<GlyphRun>>,
+            Value<Rect>: From<Fixed<Rect>>,
+            Value<Affine>: From<Fixed<Affine>>,
+            Value<Group>: From<Fixed<Group>>,
+        >
+{
+}
+
+/// Dedup key for a font: the font collection's blob id plus the face index.
+type FontKey = (u64, u32);
+
+/// Dedup key for an image: the pixel buffer's allocation identity and extents.
+type ImageKey = (usize, u32, u32);
+
+/// What a recording registers its fonts and images with: the engine that
+/// draws it.
+///
+/// A handle the engine returns names its resource in recordings, and the
+/// engine frees the resource only once no installed recording draws it and
+/// every handle has dropped.
+pub trait Resources {
+    /// Registers a font from its bytes.
+    fn font(&self, source: FontSource) -> Result<Font, ResourceError>;
+
+    /// Uploads an `Rgba8` image.
+    fn image(&self, data: ImageData<Rgba8>) -> Result<Image<Rgba8>, ResourceError>;
+}
+
+impl<B: Backend + Uploads<Rgba8>> Resources for Engine<B> {
+    fn font(&self, source: FontSource) -> Result<Font, ResourceError> {
+        Self::font(self, source)
+    }
+
+    fn image(&self, data: ImageData<Rgba8>) -> Result<Image<Rgba8>, ResourceError> {
+        Self::image(self, data)
+    }
+}
+
+/// Registered handles kept for as long as a recording names them.
+///
+/// A source the recording first reaches is registered when it is first drawn,
+/// and a source the engine rejects is remembered in `failed_*` so it is
+/// skipped rather than registered again. Callers decide the lifetime: a
+/// [`PreparedMap`] keeps its tile images for as long as it draws them, while
+/// labels call [`Registrations::end_frame`] after each placement pass.
+#[derive(Debug, Default)]
+struct Registrations {
+    fonts: HashMap<FontKey, Font>,
+    images: HashMap<ImageKey, Image<Rgba8>>,
+    used_fonts: HashSet<FontKey>,
+    used_images: HashSet<ImageKey>,
+    failed_fonts: HashSet<FontKey>,
+    failed_images: HashSet<ImageKey>,
+}
+
+impl Registrations {
+    /// The `FontId` for `font`, registering it with `resources` on first use.
+    fn font(&mut self, font: &parley::FontData, resources: &dyn Resources) -> Option<FontId> {
+        let key = (font.data.id(), font.index);
+        if let Some(handle) = self.fonts.get(&key) {
+            self.used_fonts.insert(key);
+            return Some(handle.id());
+        }
+        if self.failed_fonts.contains(&key) {
+            return None;
+        }
+        let source = FontSource {
+            data: Arc::<[u8]>::from(font.data.data()),
+            index: font.index,
+        };
+        match resources.font(source) {
+            Ok(handle) => {
+                let id = handle.id();
+                self.fonts.insert(key, handle);
+                self.used_fonts.insert(key);
+                Some(id)
+            }
+            Err(error) => {
+                tracing::warn!("GPU map font registration failed: {error}");
+                self.failed_fonts.insert(key);
+                None
+            }
+        }
+    }
+
+    /// The `ImageId` for `pixels`, registering it with `resources` on first use.
+    fn image(
+        &mut self,
+        pixels: &Arc<[u8]>,
+        width: u32,
+        height: u32,
+        resources: &dyn Resources,
+    ) -> Option<&Image<Rgba8>> {
+        let key = (Arc::as_ptr(pixels).cast::<u8>() as usize, width, height);
+        if self.images.contains_key(&key) {
+            self.used_images.insert(key);
+            return self.images.get(&key);
+        }
+        if self.failed_images.contains(&key) {
+            return None;
+        }
+        let data = ImageData::<Rgba8>::new(width, height, Arc::clone(pixels))
+            .and_then(|data| resources.image(data));
+        match data {
+            Ok(handle) => {
+                self.used_images.insert(key);
+                Some(self.images.entry(key).or_insert(handle))
+            }
+            Err(error) => {
+                tracing::warn!("GPU map image registration failed: {error}");
+                self.failed_images.insert(key);
+                None
+            }
+        }
+    }
+
+    /// Releases every registration the frame that just recorded did not name.
+    fn end_frame(&mut self) {
+        let used = std::mem::take(&mut self.used_fonts);
+        self.fonts.retain(|key, _| used.contains(key));
+        let used = std::mem::take(&mut self.used_images);
+        self.images.retain(|key, _| used.contains(key));
+    }
+}
+
+/// A fully loaded map scene ready for recording.
 ///
 /// This is an internal loading product: it is produced by the tile loader and
 /// consumed by the painter, and there is no way (nor reason) to build one from
@@ -302,11 +701,18 @@ pub struct PreparedMap {
     style: MapStyle,
     camera: Camera,
     tiles: SourceTiles,
-    annotations: Vec<Annotation>,
-    location: Option<Location>,
-    chrome: MapChrome,
-    cached_base_scene: Option<SceneRecording>,
-    raster_tiles: Arc<Vec<PreparedRasterTile>>,
+    painter: MapPainter,
+    /// The tile images (`raster`, `hillshade`, `heatmap`) this map draws.
+    registrations: Registrations,
+    /// The fonts the labels name; released after each placement pass.
+    label_registrations: Registrations,
+    /// Viewport-bound layers recorded once for `camera` — `heatmap` — keyed
+    /// by style layer index and replayed under [`camera_transform`].
+    recorded: BTreeMap<usize, RecordedLayer>,
+    /// The shared decoded-tile cache; its [`DerivedCache`]s hold the tile
+    /// pictures, shaped labels and shaded images this map replays,
+    /// byte-budgeted against decoded tiles.
+    cache: Rc<RefCell<TileCache>>,
 }
 
 impl std::fmt::Debug for PreparedMap {
@@ -315,8 +721,6 @@ impl std::fmt::Debug for PreparedMap {
             .debug_struct("PreparedMap")
             .field("camera", &self.camera)
             .field("tile_count", &self.tiles.tile_count())
-            .field("annotation_count", &self.annotations.len())
-            .field("has_location", &self.location.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -404,163 +808,169 @@ impl PreparedMap {
                 Ok::<_, MapLoadError>(tiles)
             },
         )?;
-        let (style, tiles, cached_base_scene, raster_tiles) = unblock(move || {
-            let (cached_base_scene, raster_tiles) = rayon::join(
-                || build_base_scene(&style, camera, &tiles),
-                || build_raster_tiles(&style, camera, &tiles),
-            );
-            (style, tiles, cached_base_scene, raster_tiles)
-        })
-        .await;
         Ok(Self {
             style,
             camera,
             tiles,
-            annotations: Vec::new(),
-            location: None,
-            chrome: MapChrome {
-                compass: MapVisibility::Hidden,
-                scale: MapVisibility::Hidden,
-            },
-            cached_base_scene: Some(cached_base_scene),
-            raster_tiles: Arc::new(raster_tiles),
+            painter: MapPainter::default(),
+            registrations: Registrations::default(),
+            label_registrations: Registrations::default(),
+            recorded: BTreeMap::new(),
+            cache,
         })
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "validated positive offscreen dimensions are compared in the integer GPU viewport domain"
-)]
-impl SceneContent for PreparedMap {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
-        assert_eq!(
-            (width as u32, height as u32),
-            (self.camera.viewport.width, self.camera.viewport.height),
-            "PreparedMap must be rendered at its prepared viewport size"
-        );
-        let mut painter = MapPainter::default();
-        self.append_base_scene(scene);
-        painter.paint_overlays(
-            scene,
-            self.camera,
-            &self.annotations,
-            self.location.as_ref(),
-            self.chrome,
-        );
-        false
+/// A viewport-bound layer recorded once for the prepared camera — today
+/// `heatmap`, whose CPU density field must not accumulate every frame — and
+/// replayed under [`camera_transform`] for the live camera until the next
+/// `PreparedMap`.
+///
+/// The recorded [`Picture`] names its image through `_registrations`, held
+/// for exactly the picture's lifetime.
+struct RecordedLayer {
+    picture: Picture,
+    _registrations: Registrations,
+}
+
+impl std::fmt::Debug for RecordedLayer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecordedLayer")
+            .finish_non_exhaustive()
     }
+}
+
+/// Where one style layer's commands live in the installed recording.
+struct LayerSlot {
+    /// The layer's index in the style.
+    index: usize,
+    region: RecordRegion,
 }
 
 impl PreparedMap {
-    fn append_base_scene(&mut self, scene: &mut dyn Scene2D) {
-        self.append_base_scene_for_camera(scene, self.camera);
+    /// Records every style layer, in paint order, each into a region of its
+    /// own, so a layer can record again without disturbing the others.
+    ///
+    /// Vector tile content replays from the shared tile-picture cache — one
+    /// [`Picture`] per (source tile, style layer) recorded in tile-local
+    /// space and placed by a transform that follows `live`, the camera. The
+    /// same holds for `raster` and `hillshade` tiles and for `heatmap`, which
+    /// replays the picture recorded for `self.camera`. Symbol labels replay
+    /// their cached glyph runs after collision placement.
+    fn record_layers(
+        &mut self,
+        recorder: &mut Recorder,
+        live: &Binding<Camera>,
+        resources: &dyn Resources,
+    ) -> Vec<LayerSlot> {
+        let camera = live.snapshot();
+        self.painter.occupied_labels.clear();
+        let slots = (0..self.style.layers.len())
+            .map(|index| LayerSlot {
+                index,
+                region: recorder.region(|recorder| {
+                    self.record_layer(recorder, index, camera, live, resources);
+                }),
+            })
+            .collect();
+        self.label_registrations.end_frame();
+        slots
     }
 
-    fn append_base_scene_for_camera(&mut self, scene: &mut dyn Scene2D, camera: Camera) {
-        let cached = self
-            .cached_base_scene
-            .get_or_insert_with(|| build_base_scene(&self.style, self.camera, &self.tiles));
-        cached.replay(scene, camera_transform(self.camera, camera));
+    /// Records style layer `index` as it reads at `camera`'s zoom.
+    fn record_layer(
+        &mut self,
+        recorder: &mut Recorder,
+        index: usize,
+        camera: Camera,
+        live: &Binding<Camera>,
+        resources: &dyn Resources,
+    ) {
+        let Self {
+            style,
+            camera: record_camera,
+            tiles,
+            painter,
+            registrations,
+            label_registrations,
+            recorded,
+            cache,
+        } = self;
+        painter.paint_layer(
+            recorder,
+            style,
+            index,
+            *record_camera,
+            camera,
+            live,
+            tiles,
+            &mut cache.borrow_mut(),
+            recorded,
+            registrations,
+            label_registrations,
+            resources,
+        );
     }
-}
 
-fn build_base_scene(style: &MapStyle, camera: Camera, tiles: &SourceTiles) -> SceneRecording {
-    let mut cached = SceneRecording::new();
-    MapPainter::default().paint_base(&mut cached, style, camera, tiles);
-    tracing::debug!(
-        commands = cached.len(),
-        "prepared cached GPU map display list"
-    );
-    cached
-}
+    /// Forgets what was registered with an engine that is gone.
+    fn engine_replaced(&mut self) {
+        self.registrations = Registrations::default();
+        self.label_registrations = Registrations::default();
+        self.recorded.clear();
+    }
 
-fn raster_tile_layouts(viewport: Viewport) -> Vec<RasterTileLayout> {
-    let cache_width = viewport
-        .width
-        .checked_add(MAP_TEXTURE_MARGIN * 2)
-        .expect("GPU Map cache texture width overflowed");
-    let cache_height = viewport
-        .height
-        .checked_add(MAP_TEXTURE_MARGIN * 2)
-        .expect("GPU Map cache texture height overflowed");
-    let step =
-        usize::try_from(MAP_RASTER_TILE_SIZE).expect("GPU Map raster tile size must fit usize");
-    let mut layouts = Vec::new();
-    for origin_y in (0..cache_height).step_by(step) {
-        for origin_x in (0..cache_width).step_by(step) {
-            let content_width = MAP_RASTER_TILE_SIZE.min(cache_width - origin_x);
-            let content_height = MAP_RASTER_TILE_SIZE.min(cache_height - origin_y);
-            let texture_width = content_width
-                .checked_add(MAP_RASTER_TILE_GUTTER * 2)
-                .expect("GPU Map raster tile width overflowed");
-            let texture_height = content_height
-                .checked_add(MAP_RASTER_TILE_GUTTER * 2)
-                .expect("GPU Map raster tile height overflowed");
-            layouts.push(RasterTileLayout {
-                origin: (origin_x, origin_y),
-                texture_size: (texture_width, texture_height),
-                scene_origin: (
-                    f64::from(origin_x) - f64::from(MAP_TEXTURE_MARGIN + MAP_RASTER_TILE_GUTTER),
-                    f64::from(origin_y) - f64::from(MAP_TEXTURE_MARGIN + MAP_RASTER_TILE_GUTTER),
-                ),
-            });
+    /// Whether style layer `index` is drawn at `zoom`.
+    fn layer_active(&self, index: usize, zoom: f64) -> bool {
+        self.style.layers[index].active(zoom)
+    }
+
+    /// Whether style layer `index` reads the zoom beyond switching on and off:
+    /// a camera that changes zoom records it again.
+    fn layer_reads_zoom(&self, index: usize) -> bool {
+        matches!(
+            self.style.layers[index].kind,
+            LayerKind::Background | LayerKind::Raster | LayerKind::Hillshade
+        )
+    }
+
+    /// Whether style layer `index` places labels, which a camera move records
+    /// again.
+    fn layer_places_labels(&self, index: usize) -> bool {
+        self.style.layers[index].kind == LayerKind::Symbol
+    }
+
+    /// Records `slots` again for the camera `live` now holds: layers that
+    /// switched on or off at the new zoom or read it, and every symbol layer,
+    /// whose labels place against the new view.
+    fn follow_camera(
+        &mut self,
+        slots: &[LayerSlot],
+        previous: Camera,
+        live: &Binding<Camera>,
+        resources: &dyn Resources,
+    ) {
+        let camera = live.snapshot();
+        self.painter.occupied_labels.clear();
+        for slot in slots {
+            let switched = self.layer_active(slot.index, previous.zoom)
+                != self.layer_active(slot.index, camera.zoom);
+            let zoomed = (previous.zoom - camera.zoom).abs() > f64::EPSILON
+                && self.layer_reads_zoom(slot.index);
+            if switched || zoomed || self.layer_places_labels(slot.index) {
+                slot.region.record(|recorder| {
+                    self.record_layer(recorder, slot.index, camera, live, resources);
+                });
+            }
         }
-    }
-    layouts
-}
-
-fn build_raster_tiles(
-    style: &MapStyle,
-    camera: Camera,
-    tiles: &SourceTiles,
-) -> Vec<PreparedRasterTile> {
-    let started_at = Instant::now();
-    #[cfg(not(target_arch = "wasm32"))]
-    let raster_tiles = raster_tile_layouts(camera.viewport)
-        .into_par_iter()
-        .map(|layout| prepare_raster_tile(style, camera, tiles, layout))
-        .collect::<Vec<_>>();
-    #[cfg(target_arch = "wasm32")]
-    let raster_tiles = raster_tile_layouts(camera.viewport)
-        .into_iter()
-        .map(|layout| prepare_raster_tile(style, camera, tiles, layout))
-        .collect::<Vec<_>>();
-    tracing::debug!(
-        elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0,
-        tile_count = raster_tiles.len(),
-        "prepared tiled GPU map display lists in parallel"
-    );
-    raster_tiles
-}
-
-fn prepare_raster_tile(
-    style: &MapStyle,
-    camera: Camera,
-    tiles: &SourceTiles,
-    layout: RasterTileLayout,
-) -> PreparedRasterTile {
-    let (scene_x, scene_y) = layout.scene_origin;
-    let render_bounds = Rect::new(
-        scene_x,
-        scene_y,
-        scene_x + f64::from(layout.texture_size.0),
-        scene_y + f64::from(layout.texture_size.1),
-    );
-    let mut global_scene = vello::Scene::new();
-    {
-        let mut scene = VelloScene2D::new(&mut global_scene);
-        MapPainter::default().paint_base_in_bounds(&mut scene, style, camera, tiles, render_bounds);
-    }
-    let mut local_scene = vello::Scene::new();
-    local_scene.append(&global_scene, Some(Affine::translate((-scene_x, -scene_y))));
-    PreparedRasterTile {
-        scene: local_scene,
-        layout,
+        self.label_registrations.end_frame();
     }
 }
 
+/// The affine mapping screen space under `source` to screen space under
+/// `target`: scale by the zoom difference around the shared region center.
+/// Returns `None` when the cameras coincide (the replay applies the
+/// identity).
 fn camera_transform(source: Camera, target: Camera) -> Option<Affine> {
     if source.region == target.region && source.viewport == target.viewport {
         return None;
@@ -670,7 +1080,11 @@ where
             .await?;
             let tile = Arc::new(unblock(move || decode(id, bytes)).await?);
             let mut cache = cache.borrow_mut();
-            select(&mut cache).insert(source_name, &tile);
+            if let Some((replaced_source, replaced_tile)) =
+                select(&mut cache).insert(source_name, &tile)
+            {
+                cache.pictures.release_tile(&replaced_source, replaced_tile);
+            }
             cache.enforce_budget();
             Ok::<_, MapLoadError>((index, tile))
         }
@@ -741,7 +1155,7 @@ struct MapRequestTask {
     options: MapGpuOptions,
     state: Rc<RefCell<MapSceneState>>,
     cache: Rc<RefCell<TileCache>>,
-    invalidator: Rc<RefCell<Option<SceneInvalidator>>>,
+    shared: Arc<Shared>,
 }
 
 impl MapRequestTask {
@@ -866,7 +1280,7 @@ impl MapRequestTask {
             }
         }
         drop(state);
-        invalidate(&self.invalidator);
+        self.shared.wake();
     }
 
     #[expect(
@@ -884,6 +1298,7 @@ impl MapRequestTask {
 struct ResolvedMapFrame {
     viewport: Viewport,
     camera: Option<Camera>,
+    /// The generation a resolved frame was prepared at.
     prepared_generation: Option<u64>,
     annotations: Vec<Annotation>,
     location: Option<Location>,
@@ -981,7 +1396,8 @@ fn interpolate_region(from: Region, to: Region, progress: f64) -> Region {
     )
 }
 
-/// Live scene content used by the GPU map hook.
+/// The live state of one GPU map: its signals, camera, tile loading and
+/// gestures. [`map_surface`] turns it into a view that draws it.
 pub struct MapScene {
     options: MapGpuOptions,
     region: Computed<Region>,
@@ -992,13 +1408,27 @@ pub struct MapScene {
     map_style: waterui_map::MapStyle,
     status: Option<Binding<MapStatus>>,
     chrome: MapChrome,
-    invalidator: Rc<RefCell<Option<SceneInvalidator>>>,
+    /// The mailbox with the render-thread half, whose wake this map's
+    /// signals and tile loads use.
+    shared: Arc<Shared>,
+    /// Counts the changes to what the overlays show (pins, the user's
+    /// location), so the overlays record again only when one happened.
+    overlay_epoch: Rc<Cell<u64>>,
     state: Rc<RefCell<MapSceneState>>,
     cache: Rc<RefCell<TileCache>>,
     viewport_size: Binding<Option<(f32, f32)>>,
     _watchers: Vec<BoxWatcherGuard>,
     painter: MapPainter,
     camera_motion: CameraMotion,
+    /// The fonts the overlays name.
+    registrations: Registrations,
+    /// The gesture controller this surface drives, when the view is
+    /// interactive — `None` on a static map.
+    interaction: Option<Rc<MapGestureController>>,
+    /// Tracks the camera's gesture origin across a continuous scroll.
+    surface_camera: SurfaceCameraGesture,
+    /// Pixel pan accumulated since the current scroll gesture started.
+    scroll_offset: Point,
 }
 
 impl std::fmt::Debug for MapScene {
@@ -1015,8 +1445,8 @@ impl std::fmt::Debug for MapScene {
 impl MapScene {
     /// Creates live scene content from the semantic map configuration.
     #[must_use]
-    pub fn new(config: MapConfig, options: MapGpuOptions) -> Self {
-        let request_region = config.region.clone();
+    pub fn new(config: &MapConfig, options: MapGpuOptions) -> Self {
+        let request_region = config.region().clone();
         Self::with_viewport_signal(
             config,
             options,
@@ -1027,46 +1457,45 @@ impl MapScene {
     }
 
     pub(crate) fn with_viewport_signal(
-        config: MapConfig,
+        config: &MapConfig,
         options: MapGpuOptions,
         viewport_size: Binding<Option<(f32, f32)>>,
         request_region: Computed<Region>,
         animate_camera_changes: Computed<bool>,
     ) -> Self {
         let location = config
-            .user_location
-            .filter(|_| config.user_location_visibility.is_visible())
+            .user_location()
+            .filter(|_| config.user_location_visibility().is_visible())
+            .cloned()
             .unwrap_or_else(|| Computed::constant(None));
-        let invalidator = Rc::new(RefCell::new(None::<SceneInvalidator>));
-        let initial_region = config.region.get();
+        let shared = Arc::new(Shared::default());
+        let overlay_epoch = Rc::new(Cell::new(0));
+        let initial_region = config.region().snapshot();
         let mut watchers = Vec::with_capacity(4);
-        for signal in [
-            &config.region as &dyn ErasedRedrawSignal,
-            &request_region,
-            &config.annotations,
-        ] {
-            watchers.push(signal.redraw_guard(Rc::clone(&invalidator)));
+        for signal in [config.region() as &dyn ErasedWakeSignal, &request_region] {
+            watchers.push(signal.wake_guard(Arc::clone(&shared), None));
         }
-        watchers.push(location.watch({
-            let invalidator = Rc::clone(&invalidator);
-            move |_| invalidate(&invalidator)
-        }));
+        // What the overlays show: a change records them again.
+        for signal in [config.annotations() as &dyn ErasedWakeSignal, &location] {
+            watchers.push(signal.wake_guard(Arc::clone(&shared), Some(Rc::clone(&overlay_epoch))));
+        }
         Self {
             cache: Rc::new(RefCell::new(TileCache::new(options.tile_cache_bytes.get()))),
             options,
             viewport_size,
-            region: config.region,
+            region: config.region().clone(),
             request_region,
             animate_camera_changes,
-            annotations: config.annotations,
+            annotations: config.annotations().clone(),
             location,
-            map_style: config.style,
-            status: config.status,
+            map_style: config.style(),
+            status: config.status().cloned(),
             chrome: MapChrome {
-                compass: config.compass_visibility,
-                scale: config.scale_visibility,
+                compass: config.compass_visibility(),
+                scale: config.scale_visibility(),
             },
-            invalidator,
+            shared,
+            overlay_epoch,
             state: Rc::new(RefCell::new(MapSceneState {
                 style: None,
                 prepared: None,
@@ -1079,11 +1508,15 @@ impl MapScene {
             _watchers: watchers,
             painter: MapPainter::default(),
             camera_motion: CameraMotion::new(initial_region),
+            registrations: Registrations::default(),
+            interaction: None,
+            surface_camera: SurfaceCameraGesture::default(),
+            scroll_offset: Point::ZERO,
         }
     }
 
     fn request(&self, viewport: Viewport) {
-        let region = self.request_region.get();
+        let region = self.request_region.snapshot();
         let key = RequestKey { region, viewport };
         if self.state.borrow().request.as_ref() == Some(&key) {
             return;
@@ -1123,7 +1556,7 @@ impl MapScene {
                 options: self.options.clone(),
                 state: Rc::clone(&self.state),
                 cache: Rc::clone(&self.cache),
-                invalidator: Rc::clone(&self.invalidator),
+                shared: Arc::clone(&self.shared),
             }
             .run(),
         )
@@ -1132,7 +1565,7 @@ impl MapScene {
 
     fn resolve_frame(&mut self, width: f32, height: f32) -> ResolvedMapFrame {
         let size = (width.max(1.0), height.max(1.0));
-        if self.viewport_size.get() != Some(size) {
+        if self.viewport_size.snapshot() != Some(size) {
             self.viewport_size.set(Some(size));
         }
         let viewport = Viewport {
@@ -1140,8 +1573,8 @@ impl MapScene {
             height: size.1 as u32,
         };
         let (region, animating) = self.camera_motion.update(
-            self.region.get(),
-            self.animate_camera_changes.get(),
+            self.region.snapshot(),
+            self.animate_camera_changes.snapshot(),
             &self.options.camera_animation,
         );
         if !animating {
@@ -1172,169 +1605,157 @@ impl MapScene {
             viewport,
             camera,
             prepared_generation: state.prepared_generation,
-            annotations: self.annotations.get(),
-            location: self.location.get(),
+            annotations: self.annotations.snapshot(),
+            location: self.location.snapshot(),
             animating,
         }
     }
 }
 
-trait ErasedRedrawSignal {
-    fn redraw_guard(&self, invalidator: Rc<RefCell<Option<SceneInvalidator>>>) -> BoxWatcherGuard;
+/// A signal whose changes wake the host for another frame.
+trait ErasedWakeSignal {
+    /// Wakes `shared`'s host on every change, and counts the change in
+    /// `epoch` when asked to.
+    fn wake_guard(&self, shared: Arc<Shared>, epoch: Option<Rc<Cell<u64>>>) -> BoxWatcherGuard;
 }
 
-impl<T: 'static> ErasedRedrawSignal for Computed<T> {
-    fn redraw_guard(&self, invalidator: Rc<RefCell<Option<SceneInvalidator>>>) -> BoxWatcherGuard {
-        self.watch(move |_| invalidate(&invalidator))
+impl<T: 'static> ErasedWakeSignal for Computed<T> {
+    fn wake_guard(&self, shared: Arc<Shared>, epoch: Option<Rc<Cell<u64>>>) -> BoxWatcherGuard {
+        self.watch(move |_| {
+            if let Some(epoch) = &epoch {
+                epoch.set(epoch.get().wrapping_add(1));
+            }
+            shared.wake();
+        })
     }
 }
 
-fn invalidate(invalidator: &Rc<RefCell<Option<SceneInvalidator>>>) {
-    if let Some(invalidator) = invalidator.borrow().as_ref() {
-        invalidator();
+impl MapScene {
+    /// The mailbox this map's signals and tile loads wake the host through.
+    pub(crate) fn shared(&self) -> Arc<Shared> {
+        Arc::clone(&self.shared)
     }
-}
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "validated positive scene dimensions are quantized to the integer GPU viewport domain"
-)]
-impl SceneContent for MapScene {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
-        let frame = self.resolve_frame(width, height);
-        let mut state = self.state.borrow_mut();
-        fill_viewport(scene, frame.viewport, Color::new(MAP_BACKGROUND));
-        if let (Some(prepared), Some(camera)) = (state.prepared.as_mut(), frame.camera) {
-            prepared.append_base_scene_for_camera(scene, camera);
-            self.painter.paint_overlays(
-                scene,
-                camera,
-                &frame.annotations,
-                frame.location.as_ref(),
-                self.chrome,
+    /// Forgets everything registered with an engine that is gone: its fonts
+    /// and images, and the pictures and replays that name them.
+    pub(crate) fn engine_replaced(&mut self) {
+        self.registrations = Registrations::default();
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(prepared) = state.prepared.as_mut() {
+                prepared.engine_replaced();
+            }
+            if let Some((_, prepared)) = state.pending_prepared.as_mut() {
+                prepared.engine_replaced();
+            }
+        }
+        self.cache.borrow_mut().pictures.clear();
+    }
+
+    /// Whether this map takes input on its surface.
+    pub(crate) const fn wants_input_events(&self) -> bool {
+        self.interaction.is_some()
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the scroll offset is a display-space pixel distance and the viewport size is clamped to at least one"
+    )]
+    pub(crate) fn input(&mut self, event: &SurfaceInputEvent) {
+        let SurfaceInputEvent::Scroll {
+            delta_x,
+            delta_y,
+            unit,
+            phase,
+            ..
+        } = event
+        else {
+            return;
+        };
+        // Line deltas are wheel notches; the map's own scrolling is the
+        // trackpad's pixel stream.
+        if *unit != ScrollUnit::Pixel {
+            return;
+        }
+        let Some(interaction) = self.interaction.clone() else {
+            return;
+        };
+        let Some((width, height)) = self.viewport_size.snapshot() else {
+            return;
+        };
+        let viewport = Viewport {
+            width: width.max(1.0) as u32,
+            height: height.max(1.0) as u32,
+        };
+        // A contact sequence and a momentum sequence are each one pan: it
+        // goes live on every delta and settles when its sequence ends.
+        // Contact ends before any momentum, and the map cannot know whether
+        // momentum follows, so contact settles at its own end and momentum
+        // pans as a gesture of its own from the settled camera. A discrete
+        // delta is complete on its own: it goes live and settles at once.
+        let (carries_delta, settles) = match phase {
+            ScrollPhase::Discrete => (true, true),
+            ScrollPhase::Contact(step) | ScrollPhase::Momentum(step) => match step {
+                GesturePhase::Started | GesturePhase::Moved => (true, false),
+                GesturePhase::Ended => (true, true),
+                // The platform abandoned the gesture: like the map's drag and
+                // magnification gestures, keep the camera the user last saw
+                // (the abandoned delta is not applied) and settle there.
+                GesturePhase::Cancelled => (false, true),
+            },
+        };
+        if carries_delta {
+            // Scroll deltas are content-relative: `delta_x` is positive when
+            // the content should move left, which is a negative pixel
+            // translation.
+            self.scroll_offset.x -= delta_x;
+            self.scroll_offset.y -= delta_y;
+            self.surface_camera.apply(
+                &interaction,
+                SurfaceGesture::pan(self.scroll_offset, true),
+                viewport,
             );
         }
-        frame.animating
+        if settles {
+            self.surface_camera.apply(
+                &interaction,
+                SurfaceGesture::pan(self.scroll_offset, false),
+                viewport,
+            );
+            self.scroll_offset = Point::ZERO;
+        }
+        self.shared.wake();
     }
-
-    fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
-        *self.invalidator.borrow_mut() = invalidator;
-        invalidate(&self.invalidator);
-    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct RasterSignature {
-    generation: u64,
-    viewport: Viewport,
-    annotations: Vec<RasterAnnotation>,
-    location: Option<Location>,
+/// One increment of a surface camera gesture, assembled from
+/// [`SurfaceInputEvent::Scroll`] deltas (or by a test driving the gesture
+/// math directly): a pixel pan, a pinch scale around an optional focal
+/// point, and whether the gesture is still in flight.
+#[derive(Clone, Copy)]
+struct SurfaceGesture {
+    pinch_scale: f32,
+    pinch_center: Option<Point>,
+    pan_offset: Point,
+    active: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct RasterAnnotation {
-    coordinate: Coordinate,
-    title: String,
-    subtitle: Option<String>,
-}
-
-impl From<&Annotation> for RasterAnnotation {
-    fn from(annotation: &Annotation) -> Self {
+impl SurfaceGesture {
+    /// A pan-only gesture applying `offset` pixels.
+    const fn pan(offset: Point, active: bool) -> Self {
         Self {
-            coordinate: annotation.coordinate,
-            title: annotation.title.as_str().to_owned(),
-            subtitle: annotation
-                .subtitle
-                .as_ref()
-                .map(|subtitle| subtitle.as_str().to_owned()),
+            pinch_scale: 1.0,
+            pinch_center: None,
+            pan_offset: offset,
+            active,
         }
     }
 }
 
-struct CachedMapTile {
-    _texture: wgpu::Texture,
-    bind_group: wgpu::BindGroup,
-    uniform_buffer: wgpu::Buffer,
-    origin: (u32, u32),
-    texture_size: (u32, u32),
-}
-
-struct CachedMapTexture {
-    camera: Camera,
-    tiles: Vec<CachedMapTile>,
-}
-
-#[derive(Clone)]
-struct RasterResources {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    /// Whether `device` has been reported lost. The raster worker runs off
-    /// the frame path, where nothing rebuilds on its behalf: it asks this
-    /// before every tile and stops once the device is gone.
-    device_loss: DeviceLoss,
-    bind_group_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-}
-
-struct RasterJob {
-    signature: RasterSignature,
-    /// Device generation the job was started on. Results stamped with any
-    /// other epoch belong to a dead device and are dropped on arrival.
-    epoch: u64,
-    /// The renderer's live epoch counter, checked between tiles so a device
-    /// loss mid-job aborts the remaining work instead of rasterizing the
-    /// rest of the map against a dead device.
-    live_epoch: Arc<AtomicU64>,
-    camera: Camera,
-    base_tiles: Arc<Vec<PreparedRasterTile>>,
-    resources: RasterResources,
-    renderers: Vec<vello::Renderer>,
-    next_tile: usize,
-    started_at: Instant,
-    total_paths: u64,
-    total_segments: u64,
-}
-
-impl RasterJob {
-    /// Whether the device this job rasterizes on is gone — reported lost by
-    /// the driver, or already replaced by a rebuilt context's `setup`.
-    fn is_device_dead(&self) -> bool {
-        self.live_epoch.load(Ordering::Relaxed) != self.epoch
-            || self.resources.device_loss.is_lost()
-    }
-}
-
-/// One increment of raster work delivered back to the renderer.
-///
-/// Tiles stream in one at a time: a map under a slow or repeatedly dying GPU
-/// (`SwiftShader` on the Android emulator loses the device roughly every 35 s)
-/// must not have to keep the whole six-tile raster alive across a loss window
-/// before anything reaches the screen.
-struct RasterProgress {
-    /// Device generation the producing job ran on; anything stamped with a
-    /// stale epoch belongs to a dead device and is dropped on arrival.
-    epoch: u64,
-    camera: Camera,
-    kind: RasterProgressKind,
-}
-
-enum RasterProgressKind {
-    /// A finished tile texture plus the Vello renderer that produced it.
-    Tile(Box<RasterTilePayload>),
-    /// The job rasterized every tile; returns its unused renderers to the pool.
-    Finished { renderers: Vec<vello::Renderer> },
-    /// The job died before finishing (panic in the raster task).
-    Failed,
-}
-
-struct RasterTilePayload {
-    tile: CachedMapTile,
-    renderer: vello::Renderer,
-}
-
-/// Camera gesture driven by the surface's raw [`GestureState`] — trackpad
-/// scrolls on desktop, touch drags and pinches on Android.
+/// Camera gesture driven by the surface's input events — trackpad scrolls on
+/// desktop. Pinch-to-zoom reaches the map through the view's
+/// `MagnificationGesture` metadata rather than a surface event.
 #[derive(Default)]
 struct SurfaceCameraGesture {
     origin: Option<Region>,
@@ -1344,11 +1765,11 @@ impl SurfaceCameraGesture {
     fn apply(
         &mut self,
         interaction: &MapGestureController,
-        gesture: GestureState,
+        gesture: SurfaceGesture,
         viewport: Viewport,
     ) {
         if gesture.active && self.origin.is_none() {
-            self.origin = Some(interaction.region.get());
+            self.origin = Some(interaction.region.snapshot());
             interaction.animate_camera_changes.set(false);
         }
         let Some(origin) = self.origin else {
@@ -1356,27 +1777,44 @@ impl SurfaceCameraGesture {
         };
         let width = gpu_scalar(viewport.width);
         let height = gpu_scalar(viewport.height);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "display-space gesture offsets fit the f32 translation domain"
+        )]
+        let pan_x = gesture.pan_offset.x as f32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "display-space gesture offsets fit the f32 translation domain"
+        )]
+        let pan_y = gesture.pan_offset.y as f32;
         let mut region = crate::translated_region(
             origin,
-            gesture.pan_offset.x,
-            gesture.pan_offset.y,
+            pan_x,
+            pan_y,
             f64::from(viewport.width),
             f64::from(viewport.height),
         );
         // A pinch zooms around its focal point; without one (trackpad pinch
         // that never reported a center) the viewport center anchors the zoom.
         if (gesture.pinch_scale - 1.0).abs() > f32::EPSILON {
-            let (center_x, center_y) = gesture
-                .pinch_center
-                .map_or((width / 2.0, height / 2.0), |center| (center.x, center.y));
-            region = crate::magnified_region(
-                region,
-                f64::from(gesture.pinch_scale),
-                center_x,
-                center_y,
-                width,
-                height,
+            let (center_x, center_y) = gesture.pinch_center.map_or_else(
+                || (f64::from(width / 2.0), f64::from(height / 2.0)),
+                |center| (center.x, center.y),
             );
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the focal point is a display-space position"
+            )]
+            {
+                region = crate::magnified_region(
+                    region,
+                    f64::from(gesture.pinch_scale),
+                    center_x as f32,
+                    center_y as f32,
+                    width,
+                    height,
+                );
+            }
         }
         if gesture.active {
             interaction.set_live_region(region);
@@ -1387,890 +1825,198 @@ impl SurfaceCameraGesture {
     }
 }
 
-fn build_raster_renderer(device: &wgpu::Device) -> vello::Renderer {
-    vello::Renderer::new(
-        device,
-        vello::RendererOptions {
-            use_cpu: false,
-            antialiasing_support: vello::AaSupport::area_only(),
-            num_init_threads: Some(
-                core::num::NonZeroUsize::new(1)
-                    .expect("GPU Map raster worker count must be non-zero"),
-            ),
-            pipeline_cache: None,
-        },
-    )
-    .expect("failed to create a parallel GPU Map Vello renderer")
-}
-
-fn raster_annotations(annotations: &[RasterAnnotation]) -> Vec<Annotation> {
-    annotations
-        .iter()
-        .map(|annotation| {
-            let marker = Annotation::new(annotation.coordinate, annotation.title.clone());
-            if let Some(subtitle) = annotation.subtitle.as_ref() {
-                marker.subtitle(subtitle.clone())
-            } else {
-                marker
-            }
-        })
-        .collect()
-}
-
-type RasterizedTile = (vello::Renderer, CachedMapTile, u64, u64);
-
-fn rasterize_tile(
-    mut renderer: vello::Renderer,
-    prepared: &PreparedRasterTile,
-    signature: &RasterSignature,
-    camera: Camera,
-    resources: &RasterResources,
-) -> RasterizedTile {
-    let mut scene = prepared.scene.clone();
-    if !signature.annotations.is_empty() || signature.location.is_some() {
-        let mut overlays = vello::Scene::new();
-        {
-            let annotations = raster_annotations(&signature.annotations);
-            let mut scene = VelloScene2D::new(&mut overlays);
-            MapPainter::default().paint_overlays(
-                &mut scene,
-                camera,
-                &annotations,
-                signature.location.as_ref(),
-                MapChrome {
-                    compass: MapVisibility::Hidden,
-                    scale: MapVisibility::Hidden,
-                },
-            );
-        }
-        let (scene_x, scene_y) = prepared.layout.scene_origin;
-        scene.append(&overlays, Some(Affine::translate((-scene_x, -scene_y))));
-    }
-
-    let (texture_width, texture_height) = prepared.layout.texture_size;
-    let texture = resources.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("waterui_map_cached_vector_tile"),
-        size: wgpu::Extent3d {
-            width: texture_width,
-            height: texture_height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer
-        .render_to_texture(
-            &resources.device,
-            &resources.queue,
-            &scene,
-            &view,
-            &vello::RenderParams {
-                base_color: Color::new(MAP_BACKGROUND),
-                width: texture_width,
-                height: texture_height,
-                antialiasing_method: vello::AaConfig::Area,
-            },
-        )
-        .expect("GPU Map cached Vello tile render failed");
-
-    let uniform_size = u64::try_from(core::mem::size_of::<[f32; 12]>())
-        .expect("GPU Map camera uniform size must fit u64");
-    let uniform_buffer = resources.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("waterui_map_camera_tile_uniform_buffer"),
-        size: uniform_size,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let bind_group = resources
-        .device
-        .create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("waterui_map_camera_tile_bind_group"),
-            layout: &resources.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&resources.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-            ],
-        });
-    let tile = CachedMapTile {
-        _texture: texture,
-        bind_group,
-        uniform_buffer,
-        origin: prepared.layout.origin,
-        texture_size: prepared.layout.texture_size,
-    };
-    (
-        renderer,
-        tile,
-        u64::from(scene.encoding().n_paths),
-        u64::from(scene.encoding().n_path_segments),
-    )
-}
-
-/// Rasterizes the next tile of `job`, delivering it through `sink`.
-///
-/// Returns `true` while tiles remain after this step; `false` once every tile
-/// has been sent, meaning the job is exhausted — or when the job's device
-/// epoch has advanced, meaning `setup` already rebuilt the context and every
-/// resource this job could touch belongs to a dead device.
-fn step_raster_tile(job: &mut RasterJob, sink: &mpsc::Sender<RasterProgress>) -> bool {
-    // wgpu reports `DeviceLost` errors only through the lost callback, so
-    // `create_texture` on a lost device silently returns an invalid handle —
-    // and the first `create_view` on it then raises a fatal validation
-    // error. No wgpu call may run once the device is gone. The epoch only
-    // advances when the rebuilt context runs `setup` again, which waits for
-    // the next frame; the loss handle reports the driver's callback the
-    // moment it fires, so a worker mid-job stops before that frame comes.
-    if job.is_device_dead() {
-        tracing::debug!("aborted GPU map raster: the device was lost mid-job");
-        return false;
-    }
-    let index = job.next_tile;
-    let Some(prepared) = job.base_tiles.as_slice().get(index) else {
-        return false;
-    };
-    let renderer = job
-        .renderers
-        .pop()
-        .unwrap_or_else(|| build_raster_renderer(&job.resources.device));
-    let (renderer, tile, paths, segments) = rasterize_tile(
-        renderer,
-        prepared,
-        &job.signature,
-        job.camera,
-        &job.resources,
-    );
-    job.next_tile += 1;
-    job.total_paths = job
-        .total_paths
-        .checked_add(paths)
-        .expect("GPU Map raster tile path count overflowed");
-    job.total_segments = job
-        .total_segments
-        .checked_add(segments)
-        .expect("GPU Map raster tile segment count overflowed");
-    let _ = sink.send(RasterProgress {
-        epoch: job.epoch,
-        camera: job.camera,
-        kind: RasterProgressKind::Tile(Box::new(RasterTilePayload { tile, renderer })),
-    });
-    job.next_tile < job.base_tiles.len()
-}
-
-fn log_raster_completion(job: &RasterJob) {
-    tracing::debug!(
-        elapsed_ms = job.started_at.elapsed().as_secs_f64() * 1_000.0,
-        tile_count = job.base_tiles.len(),
-        paths = job.total_paths,
-        segments = job.total_segments,
-        "completed tiled GPU map raster"
-    );
-}
-
-/// Drives `job` to completion one tile at a time.
-///
-/// `drain_queue` waits for each tile's submission to retire before the next is
-/// queued, so at most one tile of GPU work is ever in flight behind a present.
-/// Without it the whole job — minutes of work on a software renderer — piles
-/// into the queue at once, which is what starves presents and trips
-/// `SwiftShader`'s watchdog on the Android emulator. It must be `false` on
-/// devices whose wgpu calls only work on the calling thread (GL backends);
-/// those step the job one tile per `render` call instead.
-fn drive_raster_job(
-    mut job: RasterJob,
-    sink: &mpsc::Sender<RasterProgress>,
-    drain_queue: bool,
-    notify: &dyn Fn(),
-) {
-    loop {
-        // A loss that lands between the check at the top of a step and the
-        // step's wgpu calls still surfaces as a panic inside wgpu — on this
-        // thread, where no frame guard runs. The same rule as the frame
-        // path's `run_gpu_frame`: a panic alongside a confirmed loss ends
-        // the job; any other panic is a bug and propagates.
-        let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let more = step_raster_tile(&mut job, sink);
-            if more {
-                notify();
-                if drain_queue {
-                    let _ = job
-                        .resources
-                        .device
-                        .poll(wgpu::PollType::wait_indefinitely());
-                }
-            }
-            more
-        }));
-        match step {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(payload) => {
-                if job.resources.device_loss.is_lost() {
-                    tracing::debug!("aborted GPU map raster: the device was lost mid-tile");
-                    return;
-                }
-                std::panic::resume_unwind(payload);
-            }
-        }
-        if job.is_device_dead() {
-            tracing::debug!("aborted GPU map raster: the device was lost mid-job");
-            return;
-        }
-    }
-    if job.is_device_dead() {
-        return;
-    }
-    log_raster_completion(&job);
-    let _ = sink.send(RasterProgress {
-        epoch: job.epoch,
-        camera: job.camera,
-        kind: RasterProgressKind::Finished {
-            renderers: core::mem::take(&mut job.renderers),
-        },
-    });
-}
-
-struct MapGpuRenderer {
-    map: MapScene,
-    interaction: Option<Rc<MapGestureController>>,
-    surface_camera: SurfaceCameraGesture,
-    camera_pipeline: Option<wgpu::RenderPipeline>,
-    cached_texture: Option<CachedMapTexture>,
-    raster_signature: Option<RasterSignature>,
-    pending_raster_signature: Option<RasterSignature>,
-    /// A raster job queued for the render thread, advanced one tile per
-    /// `render` call. Only used when the device binds wgpu calls to the
-    /// calling thread's GPU context (`thread_bound`).
-    pending_raster_job: Option<RasterJob>,
-    raster_resources: Option<RasterResources>,
-    /// Vello renderers returned by finished tiles, reused by the next job.
-    raster_renderers: Vec<vello::Renderer>,
-    raster_sender: mpsc::Sender<RasterProgress>,
-    raster_receiver: mpsc::Receiver<RasterProgress>,
-    /// Device generation counter, bumped by `setup` after a device loss. An
-    /// `Arc` so an in-flight job can notice mid-job and abort.
-    raster_epoch: Arc<AtomicU64>,
-    /// Whether wgpu entry points are only valid on the thread `render` runs
-    /// on. True for GL-backed devices: wgpu's GLES integration requires the
-    /// owning GL context current on the calling thread, which worker threads
-    /// never have — rasterizing there crashes the process under an external
-    /// adapter and silently renders nothing under an owned one.
-    gpu_calls_thread_bound: bool,
-    redraw_handle: Option<waterui_graphics::RedrawHandle>,
-    #[cfg(test)]
-    preload_raster: bool,
-}
-
-impl MapGpuRenderer {
-    fn new(map: MapScene, interaction: Option<Rc<MapGestureController>>) -> Self {
-        let (raster_sender, raster_receiver) = mpsc::channel();
-        Self {
-            map,
-            interaction,
-            surface_camera: SurfaceCameraGesture::default(),
-            camera_pipeline: None,
-            cached_texture: None,
-            raster_signature: None,
-            pending_raster_signature: None,
-            pending_raster_job: None,
-            raster_resources: None,
-            raster_renderers: Vec::new(),
-            raster_sender,
-            raster_receiver,
-            raster_epoch: Arc::new(AtomicU64::new(0)),
-            gpu_calls_thread_bound: false,
-            redraw_handle: None,
-            #[cfg(test)]
-            preload_raster: false,
-        }
-    }
-
-    #[cfg(test)]
-    fn new_preloaded(map: MapScene) -> Self {
-        let mut renderer = Self::new(map, None);
-        renderer.preload_raster = true;
-        renderer
-    }
-
-    fn apply_surface_gesture(&mut self, gesture: GestureState, viewport: Viewport) {
-        let Some(interaction) = self.interaction.as_ref() else {
-            return;
-        };
-        self.surface_camera.apply(interaction, gesture, viewport);
-    }
-
-    fn raster_signature(frame: &ResolvedMapFrame) -> Option<RasterSignature> {
-        Some(RasterSignature {
-            generation: frame.prepared_generation?,
-            viewport: frame.viewport,
-            annotations: frame
-                .annotations
-                .iter()
-                .map(RasterAnnotation::from)
-                .collect(),
-            location: frame.location.clone(),
-        })
-    }
-
-    fn take_raster_job(&mut self, signature: RasterSignature) -> RasterJob {
-        let (camera, base_tiles) = {
-            let state = self.map.state.borrow();
-            let prepared = state
-                .prepared
-                .as_ref()
-                .expect("a prepared generation must own a prepared map");
-            (prepared.camera, Arc::clone(&prepared.raster_tiles))
-        };
-        let resources = self
-            .raster_resources
-            .as_ref()
-            .expect("GPU Map raster resources missing after setup")
-            .clone();
-        let maximum_dimension = resources.device.limits().max_texture_dimension_2d;
-        assert!(
-            MAP_RASTER_TILE_SIZE + MAP_RASTER_TILE_GUTTER * 2 <= maximum_dimension,
-            "GPU Map raster tile exceeds device limit {maximum_dimension}"
-        );
-        RasterJob {
-            signature,
-            epoch: self.raster_epoch.load(Ordering::Relaxed),
-            live_epoch: Arc::clone(&self.raster_epoch),
-            camera,
-            base_tiles,
-            resources,
-            renderers: core::mem::take(&mut self.raster_renderers),
-            next_tile: 0,
-            started_at: Instant::now(),
-            total_paths: 0,
-            total_segments: 0,
-        }
-    }
-
-    fn start_raster_job(&mut self, signature: RasterSignature) {
-        let pending_signature = signature.clone();
-        let job = self.take_raster_job(signature);
-        let sender = self.raster_sender.clone();
-        let redraw_handle = self
-            .redraw_handle
-            .as_ref()
-            .expect("GPU Map redraw handle missing after setup")
-            .clone();
-        self.pending_raster_signature = Some(pending_signature);
-        if self.gpu_calls_thread_bound {
-            // The device only answers wgpu calls on the render callback's
-            // thread; `render` advances this job one tile per frame.
-            self.pending_raster_job = Some(job);
-            redraw_handle.request_redraw();
-            return;
-        }
-        let epoch = job.epoch;
-        let camera = job.camera;
-        let notify = {
-            let redraw_handle = redraw_handle.clone();
-            move || redraw_handle.request_redraw()
-        };
-        // The job runs on `blocking`'s pool through `unblock`, but the future
-        // itself is a `spawn_local` task so hosts that pace on
-        // `outstanding_local_tasks` — preview and test captures — wait for the
-        // raster to publish instead of snapshotting the bare surface.
-        #[cfg(not(target_arch = "wasm32"))]
-        spawn_local(async move {
-            let worker_sender = sender.clone();
-            let finished = unblock(move || {
-                std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
-                    drive_raster_job(job, &worker_sender, true, &notify);
-                }))
-                .is_ok()
-            })
-            .await;
-            if !finished {
-                let _ = sender.send(RasterProgress {
-                    epoch,
-                    camera,
-                    kind: RasterProgressKind::Failed,
-                });
-            }
-            redraw_handle.request_redraw();
-        })
-        .detach();
-        #[cfg(target_arch = "wasm32")]
-        spawn_local(async move {
-            let worker_sender = sender.clone();
-            let finished = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
-                drive_raster_job(job, &worker_sender, false, &notify);
-            }))
-            .is_ok();
-            if !finished {
-                let _ = sender.send(RasterProgress {
-                    epoch,
-                    camera,
-                    kind: RasterProgressKind::Failed,
-                });
-            }
-            redraw_handle.request_redraw();
-        })
-        .detach();
-    }
-
-    /// Schedules a raster job when `signature` has no matching texture and no
-    /// job is already running.
-    fn schedule_raster_job(&mut self, signature: Option<RasterSignature>) {
-        let Some(signature) = signature else {
-            return;
-        };
-        if self.raster_signature.as_ref() == Some(&signature)
-            || self.pending_raster_signature.is_some()
-        {
-            return;
-        }
-        tracing::debug!(
-            generation = signature.generation,
-            width = signature.viewport.width,
-            height = signature.viewport.height,
-            "scheduling asynchronous GPU map raster"
-        );
-        self.start_raster_job(signature);
-    }
-
-    /// Advances a queued render-thread raster job by one tile and drains any
-    /// streamed results, returning `true` when a job was stepped.
-    fn step_pending_raster_job(&mut self) -> bool {
-        let Some(mut job) = self.pending_raster_job.take() else {
-            return false;
-        };
-        let sender = self.raster_sender.clone();
-        let epoch = job.epoch;
-        match std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
-            step_raster_tile(&mut job, &sender)
-        })) {
-            // Keep stepping while the device is alive; a bumped epoch means
-            // `setup` already rebuilt it and this job is dead.
-            Ok(true) if job.epoch == self.raster_epoch.load(Ordering::Relaxed) => {
-                self.pending_raster_job = Some(job);
-            }
-            Ok(true) => {}
-            Ok(false) => {
-                log_raster_completion(&job);
-                let _ = sender.send(RasterProgress {
-                    epoch,
-                    camera: job.camera,
-                    kind: RasterProgressKind::Finished {
-                        renderers: core::mem::take(&mut job.renderers),
-                    },
-                });
-            }
-            Err(_) => {
-                let _ = sender.send(RasterProgress {
-                    epoch,
-                    camera: job.camera,
-                    kind: RasterProgressKind::Failed,
-                });
-            }
-        }
-        self.drain_raster_progress();
-        true
-    }
-
-    fn drain_raster_progress(&mut self) {
-        while let Ok(progress) = self.raster_receiver.try_recv() {
-            self.install_raster_progress(progress);
-        }
-    }
-
-    fn install_raster_progress(&mut self, progress: RasterProgress) {
-        if progress.epoch != self.raster_epoch.load(Ordering::Relaxed) {
-            tracing::debug!("discarded GPU map raster progress produced by a lost device");
-            return;
-        }
-        match progress.kind {
-            RasterProgressKind::Tile(payload) => {
-                let Some(signature) = self.pending_raster_signature.clone() else {
-                    return;
-                };
-                self.raster_renderers.push(payload.renderer);
-                if self.raster_signature.as_ref() != Some(&signature) {
-                    self.raster_signature = Some(signature);
-                    self.cached_texture = Some(CachedMapTexture {
-                        camera: progress.camera,
-                        tiles: Vec::new(),
-                    });
-                }
-                self.cached_texture
-                    .as_mut()
-                    .expect("a raster signature implies an accumulating texture")
-                    .tiles
-                    .push(payload.tile);
-            }
-            RasterProgressKind::Finished { renderers } => {
-                self.raster_renderers.extend(renderers);
-                if let Some(signature) = self.pending_raster_signature.take() {
-                    if self.raster_signature.as_ref() != Some(&signature) {
-                        // A job that produced no tiles still publishes an
-                        // empty texture so the map is not re-rasterized every
-                        // frame.
-                        self.raster_signature = Some(signature);
-                        self.cached_texture = Some(CachedMapTexture {
-                            camera: progress.camera,
-                            tiles: Vec::new(),
-                        });
-                    }
-                    tracing::debug!("installed tiled GPU map raster");
-                }
-            }
-            RasterProgressKind::Failed => {
-                // Drop only state that belongs to the failed job: its partial
-                // tiles sit under its own signature, while a complete texture
-                // from an earlier job stays usable.
-                if self.raster_signature == self.pending_raster_signature {
-                    self.raster_signature = None;
-                    self.cached_texture = None;
-                }
-                self.pending_raster_signature = None;
-                tracing::debug!("GPU map raster task failed; rescheduling on the next frame");
-            }
-        }
-    }
-
-    fn draw_background(frame: &GpuFrame<'_>) {
-        let mut encoder = frame
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("waterui_map_background_encoder"),
-            });
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("waterui_map_background_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: f64::from(MAP_BACKGROUND[0]),
-                            g: f64::from(MAP_BACKGROUND[1]),
-                            b: f64::from(MAP_BACKGROUND[2]),
-                            a: f64::from(MAP_BACKGROUND[3]),
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        }
-        frame.queue.submit(core::iter::once(encoder.finish()));
-    }
-
-    fn draw_cached_map(&self, frame: &GpuFrame<'_>, live: Camera) {
-        let cached = self
-            .cached_texture
-            .as_ref()
-            .expect("GPU Map cached texture missing after rasterization");
-        let transform = camera_transform(cached.camera, live).unwrap_or(Affine::IDENTITY);
-        let [scale_x, skew_y, skew_x, scale_y, translate_x, translate_y] = transform.as_coeffs();
-        assert!(
-            skew_x.abs() <= f64::EPSILON
-                && skew_y.abs() <= f64::EPSILON
-                && (scale_x - scale_y).abs() <= f64::EPSILON
-                && scale_x.is_finite()
-                && scale_x > 0.0,
-            "GPU Map camera compositor requires a finite uniform scale and translation"
-        );
-
-        let mut encoder = frame
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("waterui_map_camera_encoder"),
-            });
-        for tile in &cached.tiles {
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "validated viewport-affine values enter the f32 GPU uniform domain"
-            )]
-            let uniforms = [
-                gpu_scalar(frame.width),
-                gpu_scalar(frame.height),
-                (f64::from(tile.origin.0) - f64::from(MAP_TEXTURE_MARGIN + MAP_RASTER_TILE_GUTTER))
-                    .mul_add(scale_x, translate_x) as f32,
-                (f64::from(tile.origin.1) - f64::from(MAP_TEXTURE_MARGIN + MAP_RASTER_TILE_GUTTER))
-                    .mul_add(scale_y, translate_y) as f32,
-                (f64::from(tile.texture_size.0) * scale_x) as f32,
-                (f64::from(tile.texture_size.1) * scale_y) as f32,
-                0.0,
-                0.0,
-                1.0,
-                1.0,
-                0.0,
-                0.0,
-            ];
-            frame
-                .queue
-                .write_buffer(&tile.uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
-        }
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("waterui_map_camera_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: f64::from(MAP_BACKGROUND[0]),
-                            g: f64::from(MAP_BACKGROUND[1]),
-                            b: f64::from(MAP_BACKGROUND[2]),
-                            a: f64::from(MAP_BACKGROUND[3]),
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(
-                self.camera_pipeline
-                    .as_ref()
-                    .expect("GPU Map camera pipeline missing"),
-            );
-            for tile in &cached.tiles {
-                pass.set_bind_group(0, &tile.bind_group, &[]);
-                pass.draw(0..6, 0..1);
-            }
-        }
-        frame.queue.submit(core::iter::once(encoder.finish()));
-    }
-}
-
-fn create_raster_resources(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    device_loss: DeviceLoss,
-) -> RasterResources {
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("waterui_map_camera_bind_group_layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: core::num::NonZeroU64::new(48),
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-        ],
-    });
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("waterui_map_camera_sampler"),
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-        ..Default::default()
-    });
-    RasterResources {
-        device: device.clone(),
-        queue: queue.clone(),
-        device_loss,
-        bind_group_layout,
-        sampler,
-    }
-}
-
-fn create_camera_resources(ctx: &GpuContext<'_>) -> (wgpu::RenderPipeline, RasterResources) {
-    let resources = create_raster_resources(ctx.device, ctx.queue, ctx.device_loss.clone());
-    let pipeline_layout = ctx
-        .device
-        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("waterui_map_camera_pipeline_layout"),
-            bind_group_layouts: &[Some(&resources.bind_group_layout)],
-            immediate_size: 0,
-        });
-    let (vertex, fragment) =
-        MAP_CAMERA_SHADER.create_render_stages(ctx.device, "vs_main", "fs_main");
-    let pipeline = ctx
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("waterui_map_camera_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: vertex.module(),
-                entry_point: Some(vertex.entry_point()),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: fragment.module(),
-                entry_point: Some(fragment.entry_point()),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: ctx.surface_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-    (pipeline, resources)
-}
-
-impl GpuView for MapGpuRenderer {
-    #[expect(
-        clippy::future_not_send,
-        reason = "GpuView setup runs on WaterUI's main-thread renderer and receives main-thread UI state"
-    )]
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
-        self.map
-            .set_invalidator(Some(ctx.redraw_handle.invalidator()));
-        self.redraw_handle = Some(ctx.redraw_handle.clone());
-
-        // `setup` runs again after the GPU device was lost and rebuilt. Every
-        // device-bound resource from the previous run — the cached map texture,
-        // the Vello renderers, and any in-flight raster job holding the old
-        // device and queue — is dead. Bumping the epoch both invalidates their
-        // streamed results on arrival and signals the in-flight job itself to
-        // abort; the next frame re-rasterizes from the CPU-side prepared
-        // scenes on the fresh device.
-        self.raster_epoch.fetch_add(1, Ordering::Relaxed);
-        self.cached_texture = None;
-        self.raster_signature = None;
-        self.pending_raster_signature = None;
-        self.pending_raster_job = None;
-        self.raster_renderers = Vec::new();
-        while self.raster_receiver.try_recv().is_ok() {}
-        self.gpu_calls_thread_bound = ctx.adapter.get_info().backend == wgpu::Backend::Gl;
-
-        let (pipeline, resources) = create_camera_resources(ctx);
-        self.camera_pipeline = Some(pipeline);
-        self.raster_resources = Some(resources);
-        #[cfg(test)]
-        if self.preload_raster {
-            let signature = {
-                let state = self.map.state.borrow();
-                let prepared = state
-                    .prepared
-                    .as_ref()
-                    .expect("preloaded GPU Map visual requires prepared map data");
-                RasterSignature {
-                    generation: state
-                        .prepared_generation
-                        .expect("preloaded GPU Map visual requires a prepared generation"),
-                    viewport: prepared.camera.viewport,
-                    annotations: self
-                        .map
-                        .annotations
-                        .get()
-                        .iter()
-                        .map(RasterAnnotation::from)
-                        .collect(),
-                    location: self.map.location.get(),
-                }
-            };
-            self.pending_raster_signature = Some(signature.clone());
-            let job = self.take_raster_job(signature);
-            let sender = self.raster_sender.clone();
-            let drain_queue = !self.gpu_calls_thread_bound;
-            unblock(move || {
-                drive_raster_job(job, &sender, drain_queue, &|| {});
-            })
-            .await;
-            self.drain_raster_progress();
-        }
-    }
-
-    fn render(&mut self, frame: &mut GpuFrame) {
-        self.apply_surface_gesture(
-            frame.gesture,
-            Viewport {
-                width: frame.width,
-                height: frame.height,
-            },
-        );
-        let resolved = self
-            .map
-            .resolve_frame(gpu_scalar(frame.width), gpu_scalar(frame.height));
-        let signature = Self::raster_signature(&resolved);
-        self.drain_raster_progress();
-        self.schedule_raster_job(signature);
-        // A queued job advances one tile per render call — the only place a
-        // thread-bound device's wgpu calls are valid — and each finished tile
-        // is installed before the present below, so partial coverage reaches
-        // the screen while the rest of the map is still rasterizing. Any step
-        // requests another frame: tiles may remain, and a job that just
-        // terminated — finished or failed — needs the next frame to install
-        // or reschedule it even when nothing else would redraw.
-        if self.step_pending_raster_job() {
-            frame.request_redraw();
-        }
-
-        match (resolved.camera, self.cached_texture.as_ref()) {
-            (Some(live), Some(_)) => self.draw_cached_map(frame, live),
-            _ => Self::draw_background(frame),
-        }
-        if resolved.animating {
-            frame.request_redraw();
-        }
-    }
-}
-
-/// Renders a custom [`MapScene`] as a GPU surface.
+/// Renders a custom [`MapScene`] as a view.
 ///
 /// This is the public path from a hand-built scene to a renderable view: build
 /// a [`MapScene`] from a [`MapConfig`](waterui_map::MapConfig), hand it here,
-/// and place the returned [`GpuSurface`] like any other view. The built-in
+/// and place the returned [`GpuContentView`] like any other view. The built-in
 /// `Map` view goes through the same surface, adding the gesture
 /// controller that drives pan and zoom.
 #[must_use]
-pub fn map_surface(map: MapScene) -> GpuSurface {
+pub fn map_surface(map: MapScene) -> GpuContentView {
     map_surface_with_interaction(map, None)
 }
 
+/// `map` with a gesture controller attached: scroll events reaching the
+/// surface drive the map's camera through it.
 pub fn map_surface_with_interaction(
-    map: MapScene,
+    mut map: MapScene,
     interaction: Option<Rc<MapGestureController>>,
-) -> GpuSurface {
-    GpuSurface::new(MapGpuRenderer::new(map, interaction))
+) -> GpuContentView {
+    map.interaction = interaction;
+    host::view(map)
+}
+
+/// What fixes the structure of the installed recording: a different one is
+/// recorded whole, anything else follows the camera in place.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StructureKey {
+    /// The prepared map the recording draws, `None` before the first lands.
+    generation: Option<u64>,
+    /// The box in points.
+    viewport: Viewport,
+    /// Pixels per point.
+    scale: f32,
+}
+
+/// The installed recording's moving parts.
+struct Drawn {
+    /// The camera every placement in the recording follows.
+    camera: Binding<Camera>,
+    /// One region per style layer, in paint order.
+    layers: Vec<LayerSlot>,
+    overlays: RecordRegion,
+    /// The overlay epoch the overlays were recorded at.
+    overlay_epoch: u64,
+}
+
+/// A map retained on a surface: the recording installed on its root layer and
+/// the handles that keep it up to date.
+///
+/// [`Self::update`] records the surface whole only when its structure changes
+/// — a new prepared map, a new box. A camera move moves the recording's
+/// placements through the camera signal and records again only what the move
+/// changes the choice of: the labels, the overlays, and layers crossing a zoom
+/// threshold. Each of those is a region of its own.
+pub struct Retained<B: Backend> {
+    surface: Surface<B>,
+    installed: Option<(StructureKey, Option<Drawn>)>,
+    /// How many times the surface was recorded whole.
+    #[cfg(test)]
+    installs: usize,
+}
+
+impl<B: Backend> Retained<B> {
+    /// A retained map on `surface`, with nothing recorded yet.
+    pub(crate) const fn new(surface: Surface<B>) -> Self {
+        Self {
+            surface,
+            installed: None,
+            #[cfg(test)]
+            installs: 0,
+        }
+    }
+
+    /// The surface the map is retained on.
+    pub(crate) const fn surface(&self) -> &Surface<B> {
+        &self.surface
+    }
+
+    /// Brings the recording up to date for the map's state at `pixels` and
+    /// `scale`, answering whether the camera is still moving.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel extents of a surface fit f32 exactly"
+    )]
+    pub(crate) fn update(
+        &mut self,
+        resources: &dyn Resources,
+        scene: &mut MapScene,
+        pixels: (u32, u32),
+        scale: f32,
+    ) -> bool {
+        let frame = scene.resolve_frame(pixels.0 as f32 / scale, pixels.1 as f32 / scale);
+        let key = StructureKey {
+            generation: frame.prepared_generation,
+            viewport: frame.viewport,
+            scale,
+        };
+        match &mut self.installed {
+            Some((installed, drawn)) if *installed == key => {
+                if let (Some(drawn), Some(camera)) = (drawn, frame.camera) {
+                    Self::follow(drawn, scene, &frame, camera, resources);
+                }
+            }
+            _ => {
+                let drawn = self.install(resources, scene, &frame, scale);
+                self.installed = Some((key, drawn));
+                #[cfg(test)]
+                {
+                    self.installs += 1;
+                }
+            }
+        }
+        frame.animating
+    }
+
+    /// Records the surface whole.
+    fn install(
+        &self,
+        resources: &dyn Resources,
+        scene: &mut MapScene,
+        frame: &ResolvedMapFrame,
+        scale: f32,
+    ) -> Option<Drawn> {
+        let mut drawn = None;
+        let mut state = scene.state.borrow_mut();
+        let content = self.surface.record(|recorder| {
+            fill_viewport(recorder, frame.viewport, Color::new(MAP_BACKGROUND));
+            let (Some(prepared), Some(camera)) = (state.prepared.as_mut(), frame.camera) else {
+                return;
+            };
+            let live = binding(camera);
+            let layers = prepared.record_layers(recorder, &live, resources);
+            let overlays = recorder.region(|recorder| {
+                scene.painter.paint_overlays(
+                    recorder,
+                    camera,
+                    &frame.annotations,
+                    frame.location.as_ref(),
+                    scene.chrome,
+                    &mut scene.registrations,
+                    resources,
+                );
+                scene.registrations.end_frame();
+            });
+            drawn = Some(Drawn {
+                camera: live,
+                layers,
+                overlays,
+                overlay_epoch: scene.overlay_epoch.get(),
+            });
+        });
+        drop(state);
+        self.surface.update(|tx| {
+            // The recording is in points; the root layer scales it to pixels.
+            tx[self.surface.root()].transform(Affine::scale(f64::from(scale)));
+            tx[self.surface.root()].content(content);
+        });
+        drawn
+    }
+
+    /// Follows a camera move in place.
+    fn follow(
+        drawn: &mut Drawn,
+        scene: &mut MapScene,
+        frame: &ResolvedMapFrame,
+        camera: Camera,
+        resources: &dyn Resources,
+    ) {
+        let previous = drawn.camera.snapshot();
+        let moved = camera.region != previous.region;
+        if moved {
+            drawn.camera.set(camera);
+            if let Some(prepared) = scene.state.borrow_mut().prepared.as_mut() {
+                prepared.follow_camera(&drawn.layers, previous, &drawn.camera, resources);
+            }
+        }
+        let epoch = scene.overlay_epoch.get();
+        if moved || epoch != drawn.overlay_epoch {
+            drawn.overlay_epoch = epoch;
+            drawn.overlays.record(|recorder| {
+                scene.painter.paint_overlays(
+                    recorder,
+                    camera,
+                    &frame.annotations,
+                    frame.location.as_ref(),
+                    scene.chrome,
+                    &mut scene.registrations,
+                    resources,
+                );
+                scene.registrations.end_frame();
+            });
+        }
+    }
 }
 
 #[derive(Default)]
@@ -2286,50 +2032,229 @@ struct MapPainter {
     reason = "style evaluation converts bounded MapLibre numeric values and forwards explicit render-state parameters"
 )]
 impl MapPainter {
-    fn paint_base(
+    /// Paints style layer `index` as it reads at `camera`, placed by `live`.
+    ///
+    /// Paint order is the style's: the caller keeps one region per layer, in
+    /// order, so each layer draws fully before the next starts. For the vector
+    /// kinds that batch (`fill`, `fill-extrusion`, `line`, `circle`) a layer is
+    /// one recorded [`TilePicture`] per tile — the granularity that keeps style
+    /// layer L of every tile ahead of layer L+1 of any tile — each placed by a
+    /// transform that follows `live`. `symbol` labels place globally against
+    /// `camera` so collision detection spans tile boundaries, though their
+    /// shaping replays from the tile cache; `heatmap` replays the layer
+    /// recorded for `record_camera`; `raster` and `hillshade` tiles follow
+    /// `live` like the vector tiles.
+    #[expect(clippy::too_many_arguments, reason = "explicit render state")]
+    fn paint_layer(
         &mut self,
-        scene: &mut dyn Scene2D,
+        scene: &mut Recorder,
         style: &MapStyle,
+        index: usize,
+        record_camera: Camera,
         camera: Camera,
+        live: &Binding<Camera>,
         tiles: &SourceTiles,
+        cache: &mut TileCache,
+        recorded: &mut BTreeMap<usize, RecordedLayer>,
+        registrations: &mut Registrations,
+        label_registrations: &mut Registrations,
+        resources: &dyn Resources,
     ) {
-        self.paint_base_in_bounds(scene, style, camera, tiles, camera_render_bounds(camera));
+        let layer = &style.layers[index];
+        if !layer.active(camera.zoom) {
+            return;
+        }
+        match layer.kind {
+            LayerKind::Background => Self::paint_background(scene, layer, camera),
+            LayerKind::Fill | LayerKind::FillExtrusion | LayerKind::Line | LayerKind::Circle => {
+                Self::paint_tile_layer(
+                    scene,
+                    style.fingerprint,
+                    index,
+                    layer,
+                    camera,
+                    live,
+                    tiles,
+                    cache,
+                );
+            }
+            LayerKind::Symbol => {
+                self.paint_symbol_layer(
+                    scene,
+                    style,
+                    index,
+                    layer,
+                    camera,
+                    tiles,
+                    camera_render_bounds(camera),
+                    cache,
+                    label_registrations,
+                    resources,
+                );
+            }
+            LayerKind::Heatmap => {
+                let entry = recorded.entry(index).or_insert_with(|| {
+                    let mut registrations = Registrations::default();
+                    let picture = Picture::record(|frozen| {
+                        Self::paint_heatmap(
+                            frozen,
+                            layer,
+                            record_camera,
+                            tiles,
+                            camera_render_bounds(record_camera),
+                            &mut registrations,
+                            resources,
+                        );
+                    });
+                    RecordedLayer {
+                        picture,
+                        _registrations: registrations,
+                    }
+                });
+                scene.picture(
+                    &entry.picture,
+                    live.clone().map(move |camera| {
+                        camera_transform(record_camera, camera).unwrap_or(Affine::IDENTITY)
+                    }),
+                );
+            }
+            LayerKind::Raster => {
+                Self::paint_raster(scene, layer, camera, live, tiles, registrations, resources);
+            }
+            LayerKind::Hillshade => {
+                Self::paint_hillshade(
+                    scene,
+                    style,
+                    index,
+                    layer,
+                    camera,
+                    live,
+                    tiles,
+                    cache,
+                    registrations,
+                    resources,
+                );
+            }
+            // `sky` only has a visible extent once the camera can pitch away
+            // from straight-down. This camera is always top-down, so the
+            // layer is accepted, contributes nothing, and says so once.
+            LayerKind::Sky => tracing::debug!(
+                layer = layer.id,
+                "skipped sky layer: the GPU map camera has no pitch"
+            ),
+        }
     }
 
-    fn paint_base_in_bounds(
+    /// Replays one vector style layer tile by tile, recording each tile's
+    /// picture on first use.
+    fn paint_tile_layer(
+        scene: &mut Recorder,
+        fingerprint: u64,
+        index: usize,
+        layer: &StyleLayer,
+        camera: Camera,
+        live: &Binding<Camera>,
+        tiles: &SourceTiles,
+        cache: &mut TileCache,
+    ) {
+        let source_name = layer
+            .source
+            .as_ref()
+            .unwrap_or_else(|| panic!("layer {} requires a vector source", layer.id));
+        let source_layer = layer
+            .source_layer
+            .as_ref()
+            .unwrap_or_else(|| panic!("layer {} requires source-layer", layer.id));
+        let source_tiles = tiles
+            .vector
+            .get(source_name)
+            .unwrap_or_else(|| panic!("vector source {source_name} was not prepared"));
+        for tile in source_tiles {
+            let key = TilePictureKey {
+                fingerprint,
+                source: source_name.clone(),
+                tile: tile.id,
+                layer: index,
+            };
+            let picture = cache.pictures.get_or_insert(
+                &key,
+                |picture| picture.byte_len,
+                || record_tile_layer(layer, camera, tile, source_layer),
+            );
+            let tile = tile.id;
+            scene.picture(
+                &picture.picture,
+                live.clone().map(move |camera| camera.tile_transform(tile)),
+            );
+        }
+    }
+
+    /// Paints a `symbol` layer's labels. Collision placement stays global and
+    /// per frame — it is a viewport-wide problem — but everything that does
+    /// not depend on the live camera (evaluated text, shaped glyph runs, the
+    /// anchor in extent units) replays from the tile cache, shaped at most
+    /// once per (style fingerprint, source, tile, layer, feature).
+    #[expect(clippy::too_many_arguments, reason = "explicit render state")]
+    fn paint_symbol_layer(
         &mut self,
-        scene: &mut dyn Scene2D,
+        scene: &mut impl ReplayDraw,
         style: &MapStyle,
+        index: usize,
+        layer: &StyleLayer,
         camera: Camera,
         tiles: &SourceTiles,
         render_bounds: Rect,
+        cache: &mut TileCache,
+        registrations: &mut Registrations,
+        resources: &dyn Resources,
     ) {
-        self.occupied_labels.clear();
-        for layer in &style.layers {
-            if !layer.active(camera.zoom) {
+        let source_name = layer
+            .source
+            .as_ref()
+            .unwrap_or_else(|| panic!("layer {} requires a vector source", layer.id));
+        let source_layer = layer
+            .source_layer
+            .as_ref()
+            .unwrap_or_else(|| panic!("layer {} requires source-layer", layer.id));
+        let source_tiles = tiles
+            .vector
+            .get(source_name)
+            .unwrap_or_else(|| panic!("vector source {source_name} was not prepared"));
+        for tile in source_tiles {
+            let Some(tile_layer) = tile.layers.get(source_layer) else {
                 continue;
-            }
-            match layer.kind {
-                LayerKind::Background => Self::paint_background(scene, layer, camera),
-                LayerKind::Fill
-                | LayerKind::FillExtrusion
-                | LayerKind::Line
-                | LayerKind::Symbol
-                | LayerKind::Circle => {
-                    self.paint_vector_layer(scene, layer, camera, tiles, render_bounds);
+            };
+            for (feature_index, feature) in tile_layer.features.iter().enumerate() {
+                if !feature_visible(
+                    camera,
+                    tile.id,
+                    tile_layer.extent,
+                    &feature.geometry,
+                    render_bounds,
+                ) {
+                    continue;
                 }
-                LayerKind::Heatmap => {
-                    Self::paint_heatmap(scene, layer, camera, tiles, render_bounds);
+                let key = TileFeatureKey {
+                    fingerprint: style.fingerprint,
+                    source: source_name.clone(),
+                    tile: tile.id,
+                    layer: index,
+                    feature: feature_index,
+                };
+                let label = cache.labels.get_or_insert(
+                    &key,
+                    |label| label.as_ref().map_or(0, CachedLabel::byte_len),
+                    || self.shape_label(layer, camera, feature),
+                );
+                let Some(label) = label else {
+                    continue;
+                };
+                let (x, y) =
+                    camera.tile_point(tile.id, tile_layer.extent, label.anchor.0, label.anchor.1);
+                if !render_bounds.contains((x, y)) {
+                    continue;
                 }
-                LayerKind::Raster => Self::paint_raster(scene, layer, camera, tiles),
-                LayerKind::Hillshade => Self::paint_hillshade(scene, layer, camera, tiles),
-                // `sky` only has a visible extent once the camera can pitch away
-                // from straight-down. This camera is always top-down, so the
-                // layer is accepted, contributes nothing, and says so once.
-                LayerKind::Sky => tracing::debug!(
-                    layer = layer.id,
-                    "skipped sky layer: the GPU map camera has no pitch"
-                ),
+                self.emit_label(scene, label, (x, y), registrations, resources);
             }
         }
     }
@@ -2341,11 +2266,13 @@ impl MapPainter {
     /// same image path as `raster` and `hillshade` rather than adding a second
     /// GPU accumulation target, and the field is the only allocation.
     fn paint_heatmap(
-        scene: &mut dyn Scene2D,
+        scene: &mut impl ReplayDraw,
         layer: &StyleLayer,
         camera: Camera,
         tiles: &SourceTiles,
         render_bounds: Rect,
+        registrations: &mut Registrations,
+        resources: &dyn Resources,
     ) {
         let zoom_context = EvaluationContext::new().with_zoom(camera.zoom);
         let opacity = property_number(layer, "heatmap-opacity", &zoom_context).unwrap_or(1.0);
@@ -2394,36 +2321,42 @@ impl MapPainter {
         let Some(pixels) = field.colorize(layer, camera.zoom) else {
             return;
         };
-        let brush = peniko::ImageBrush::new(peniko::ImageData {
-            data: peniko::Blob::new(image_blob(Arc::new(pixels))),
-            format: peniko::ImageFormat::Rgba8,
-            alpha_type: peniko::ImageAlphaType::Alpha,
-            width: camera.viewport.width,
-            height: camera.viewport.height,
-        });
+        let Some(image) = registrations.image(
+            &Arc::<[u8]>::from(pixels),
+            camera.viewport.width,
+            camera.viewport.height,
+            resources,
+        ) else {
+            return;
+        };
+        let bounds = Rect::new(
+            0.0,
+            0.0,
+            f64::from(camera.viewport.width),
+            f64::from(camera.viewport.height),
+        );
         let alpha = clamped_alpha(opacity);
         if alpha < 1.0 {
-            scene.push_layer(
-                Fill::NonZero,
-                peniko::BlendMode::default(),
-                alpha,
-                Affine::IDENTITY,
-                &render_bounds.to_path(0.1),
-            );
-        }
-        scene.draw_image(&brush, Affine::IDENTITY);
-        if alpha < 1.0 {
-            scene.pop_layer();
+            scene.clip(Fixed(ShapeData::of(&render_bounds.to_path(0.1))), |scene| {
+                scene.group(Fixed(Group::new().opacity(alpha)), |scene| {
+                    scene.image(image.id(), Fixed(bounds), Sampling::Linear);
+                });
+            });
+        } else {
+            scene.image(image.id(), Fixed(bounds), Sampling::Linear);
         }
     }
 
     /// Draws a `raster` layer by placing each decoded image tile at the screen
     /// rect its tile id occupies under the current camera.
     fn paint_raster(
-        scene: &mut dyn Scene2D,
+        scene: &mut Recorder,
         layer: &StyleLayer,
         camera: Camera,
+        live: &Binding<Camera>,
         tiles: &SourceTiles,
+        registrations: &mut Registrations,
+        resources: &dyn Resources,
     ) {
         let context = EvaluationContext::new().with_zoom(camera.zoom);
         let opacity = property_number(layer, "raster-opacity", &context).unwrap_or(1.0);
@@ -2439,44 +2372,67 @@ impl MapPainter {
             .get(source_name)
             .unwrap_or_else(|| panic!("raster source {source_name} was not prepared"));
         let alpha = clamped_alpha(opacity);
+        let clip = ShapeData::of(
+            &Rect::new(
+                0.0,
+                0.0,
+                f64::from(camera.viewport.width),
+                f64::from(camera.viewport.height),
+            )
+            .to_path(0.1),
+        );
         if alpha < 1.0 {
-            scene.push_layer(
-                Fill::NonZero,
-                peniko::BlendMode::default(),
-                alpha,
-                Affine::IDENTITY,
-                &Rect::new(
-                    0.0,
-                    0.0,
-                    f64::from(camera.viewport.width),
-                    f64::from(camera.viewport.height),
-                )
-                .to_path(0.1),
-            );
+            scene.clip(Fixed(clip), |scene| {
+                scene.group(Fixed(Group::new().opacity(alpha)), |scene| {
+                    for tile in source_tiles {
+                        let Some(image) =
+                            registrations.image(&tile.pixels, tile.width, tile.height, resources)
+                        else {
+                            continue;
+                        };
+                        scene.image(
+                            image.id(),
+                            image_rect(live, tile.id, tile.width),
+                            Sampling::Linear,
+                        );
+                    }
+                });
+            });
+            return;
         }
         for tile in source_tiles {
-            let brush = peniko::ImageBrush::new(peniko::ImageData {
-                data: peniko::Blob::new(image_blob(Arc::clone(&tile.pixels))),
-                format: peniko::ImageFormat::Rgba8,
-                alpha_type: peniko::ImageAlphaType::Alpha,
-                width: tile.width,
-                height: tile.height,
-            });
-            scene.draw_image(&brush, tile_image_transform(camera, tile.id, tile.width));
-        }
-        if alpha < 1.0 {
-            scene.pop_layer();
+            let Some(image) = registrations.image(&tile.pixels, tile.width, tile.height, resources)
+            else {
+                continue;
+            };
+            scene.image(
+                image.id(),
+                image_rect(live, tile.id, tile.width),
+                Sampling::Linear,
+            );
         }
     }
 
     /// Draws a `hillshade` layer by shading each DEM tile on the CPU and
     /// blitting the result, which keeps terrain on the same image path as
     /// `raster` instead of introducing a second sampling mechanism.
+    ///
+    /// The shaded pixels are CPU work, so they cache per (style fingerprint,
+    /// source, tile, layer) like a tile picture; holding one `Arc` per tile
+    /// also means [`Registrations::image`] hits its existing registration
+    /// instead of re-uploading every frame.
+    #[expect(clippy::too_many_arguments, reason = "explicit render state")]
     fn paint_hillshade(
-        scene: &mut dyn Scene2D,
+        scene: &mut Recorder,
+        style: &MapStyle,
+        index: usize,
         layer: &StyleLayer,
         camera: Camera,
+        live: &Binding<Camera>,
         tiles: &SourceTiles,
+        cache: &mut TileCache,
+        registrations: &mut Registrations,
+        resources: &dyn Resources,
     ) {
         let context = EvaluationContext::new().with_zoom(camera.zoom);
         let exaggeration =
@@ -2497,85 +2453,49 @@ impl MapPainter {
             .get(source_name)
             .unwrap_or_else(|| panic!("raster-dem source {source_name} was not prepared"));
         for tile in source_tiles {
-            let shaded = shade_dem_tile(tile, camera, exaggeration, shadow, highlight);
-            let brush = peniko::ImageBrush::new(peniko::ImageData {
-                data: peniko::Blob::new(image_blob(Arc::new(shaded))),
-                format: peniko::ImageFormat::Rgba8,
-                alpha_type: peniko::ImageAlphaType::Alpha,
-                width: tile.width,
-                height: tile.height,
-            });
-            scene.draw_image(&brush, tile_image_transform(camera, tile.id, tile.width));
-        }
-    }
-
-    /// Draws one `circle` layer feature: a screen-space disc per geometry point.
-    fn paint_circle(
-        scene: &mut dyn Scene2D,
-        layer: &StyleLayer,
-        context: &EvaluationContext,
-        camera: Camera,
-        tile: TileId,
-        extent: u32,
-        geometry: &Geometry<f32>,
-    ) {
-        let radius = property_number(layer, "circle-radius", context).unwrap_or(5.0);
-        if radius <= 0.0 {
-            return;
-        }
-        let fill = property_color(layer, "circle-color", context).map(|color| {
-            color_with_opacity(
-                color,
-                property_number(layer, "circle-opacity", context).unwrap_or(1.0),
-            )
-        });
-        let stroke_width = property_number(layer, "circle-stroke-width", context).unwrap_or(0.0);
-        let stroke = (stroke_width > 0.0)
-            .then(|| property_color(layer, "circle-stroke-color", context))
-            .flatten()
-            .map(|color| {
-                color_with_opacity(
-                    color,
-                    property_number(layer, "circle-stroke-opacity", context).unwrap_or(1.0),
-                )
-            });
-        if fill.is_none() && stroke.is_none() {
-            return;
-        }
-        for point in geometry_points(geometry) {
-            let (x, y) = camera.tile_point(tile, extent, point.x, point.y);
-            let disc = Circle::new((x, y), radius).to_path(0.1);
-            if let Some(fill) = fill {
-                scene.fill(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    &Brush::Solid(fill),
-                    None,
-                    &disc,
-                );
-            }
-            if let Some(stroke) = stroke {
-                scene.stroke(
-                    &Stroke::new(stroke_width),
-                    Affine::IDENTITY,
-                    &Brush::Solid(stroke),
-                    None,
-                    &disc,
-                );
-            }
+            let key = TilePictureKey {
+                fingerprint: style.fingerprint,
+                source: source_name.clone(),
+                tile: tile.id,
+                layer: index,
+            };
+            let pixels = cache.images.get_or_insert(
+                &key,
+                |pixels| tile_bytes(pixels.len()),
+                || {
+                    Arc::<[u8]>::from(shade_dem_tile(
+                        tile,
+                        camera,
+                        exaggeration,
+                        shadow,
+                        highlight,
+                    ))
+                },
+            );
+            let Some(image) = registrations.image(pixels, tile.width, tile.height, resources)
+            else {
+                continue;
+            };
+            scene.image(
+                image.id(),
+                image_rect(live, tile.id, tile.width),
+                Sampling::Linear,
+            );
         }
     }
 
     fn paint_overlays(
         &mut self,
-        scene: &mut dyn Scene2D,
+        scene: &mut impl ReplayDraw,
         camera: Camera,
         annotations: &[Annotation],
         location: Option<&Location>,
         chrome: MapChrome,
+        registrations: &mut Registrations,
+        resources: &dyn Resources,
     ) {
         self.occupied_labels.clear();
-        self.paint_annotations(scene, camera, annotations);
+        self.paint_annotations(scene, camera, annotations, registrations, resources);
         if let Some(location) = location {
             Self::paint_location(scene, camera, location);
         }
@@ -2583,7 +2503,7 @@ impl MapPainter {
             Self::paint_compass(scene, camera);
         }
         if chrome.scale.is_visible() {
-            self.paint_scale_bar(scene, camera);
+            self.paint_scale_bar(scene, camera, registrations, resources);
         }
     }
 
@@ -2592,25 +2512,17 @@ impl MapPainter {
     /// This camera is always north-up, so the needle is fixed; it is drawn
     /// because the application asked for it, the same way a platform map keeps
     /// a compass affordance visible when configured to.
-    fn paint_compass(scene: &mut dyn Scene2D, camera: Camera) {
+    fn paint_compass(scene: &mut impl ReplayDraw, camera: Camera) {
         let center = (
             f64::from(camera.viewport.width) - CHROME_INSET - COMPASS_RADIUS,
             CHROME_INSET + COMPASS_RADIUS,
         );
-        let dial = Circle::new(center, COMPASS_RADIUS).to_path(0.1);
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            &Brush::Solid(CHROME_SURFACE),
-            None,
-            &dial,
-        );
+        let dial = ShapeData::of(&Circle::new(center, COMPASS_RADIUS).to_path(0.1));
+        scene.fill(Fixed(dial.clone()), Fixed(Paint::from(CHROME_SURFACE)));
         scene.stroke(
-            &Stroke::new(1.0),
-            Affine::IDENTITY,
-            &Brush::Solid(CHROME_BORDER),
-            None,
-            &dial,
+            Fixed(dial),
+            Fixed(Stroke::new(1.0)),
+            Fixed(Paint::from(CHROME_BORDER)),
         );
 
         // The needle: a north half in the accent colour over a muted south half.
@@ -2622,11 +2534,8 @@ impl MapPainter {
         north.line_to((center.0 + waist, center.1));
         north.close_path();
         scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            &Brush::Solid(COMPASS_NORTH),
-            None,
-            &north,
+            Fixed(ShapeData::of(&north)),
+            Fixed(Paint::from(COMPASS_NORTH)),
         );
         let mut south = BezPath::new();
         south.move_to((center.0, center.1 + tip));
@@ -2634,16 +2543,19 @@ impl MapPainter {
         south.line_to((center.0 + waist, center.1));
         south.close_path();
         scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            &Brush::Solid(COMPASS_SOUTH),
-            None,
-            &south,
+            Fixed(ShapeData::of(&south)),
+            Fixed(Paint::from(COMPASS_SOUTH)),
         );
     }
 
     /// Draws a scale bar whose length is a round distance at this latitude.
-    fn paint_scale_bar(&mut self, scene: &mut dyn Scene2D, camera: Camera) {
+    fn paint_scale_bar(
+        &mut self,
+        scene: &mut impl ReplayDraw,
+        camera: Camera,
+        registrations: &mut Registrations,
+        resources: &dyn Resources,
+    ) {
         let latitude = camera.region.center.latitude.get();
         let Some((meters, width)) = scale_bar_span(camera, latitude) else {
             return;
@@ -2656,11 +2568,9 @@ impl MapPainter {
         bar.line_to((left + width, bottom));
         bar.line_to((left + width, bottom - SCALE_TICK));
         scene.stroke(
-            &Stroke::new(2.0),
-            Affine::IDENTITY,
-            &Brush::Solid(CHROME_BORDER),
-            None,
-            &bar,
+            Fixed(ShapeData::of(&bar)),
+            Fixed(Stroke::new(2.0)),
+            Fixed(Paint::from(CHROME_BORDER)),
         );
         self.draw_label(
             scene,
@@ -2674,212 +2584,193 @@ impl MapPainter {
             CHROME_LABEL,
             CHROME_SURFACE,
             1.0,
+            registrations,
+            resources,
         );
     }
 
-    fn paint_background(scene: &mut dyn Scene2D, layer: &StyleLayer, camera: Camera) {
+    fn paint_background(scene: &mut impl ReplayDraw, layer: &StyleLayer, camera: Camera) {
         let context = EvaluationContext::new().with_zoom(camera.zoom);
         let color = property_color(layer, "background-color", &context)
             .unwrap_or(Color::new([1.0, 1.0, 1.0, 1.0]));
         fill_viewport(scene, camera.viewport, color);
     }
 
-    fn paint_vector_layer(
+    /// The camera-independent half of label painting, run at most once per
+    /// feature: evaluate the feature's text properties, anchor it in extent
+    /// units and shape the glyph runs. The result caches in the tile cache
+    /// and a frame only calls [`Self::emit_label`] on it.
+    fn shape_label(
         &mut self,
-        scene: &mut dyn Scene2D,
         layer: &StyleLayer,
         camera: Camera,
-        tiles: &SourceTiles,
-        render_bounds: Rect,
-    ) {
-        let source_name = layer
-            .source
-            .as_ref()
-            .unwrap_or_else(|| panic!("layer {} requires a vector source", layer.id));
-        let source_layer = layer
-            .source_layer
-            .as_ref()
-            .unwrap_or_else(|| panic!("layer {} requires source-layer", layer.id));
-        let source_tiles = tiles
-            .vector
-            .get(source_name)
-            .unwrap_or_else(|| panic!("vector source {source_name} was not prepared"));
-        let mut matched_features = 0_usize;
-        let mut fill_batches = BTreeMap::<ColorKey, FillBatch>::new();
-        let mut line_batches = BTreeMap::<LineKey, LineBatch>::new();
-        for tile in source_tiles {
-            let Some(tile_layer) = tile.layers.get(source_layer) else {
-                continue;
-            };
-            for feature in &tile_layer.features {
-                if !feature_visible(
-                    camera,
-                    tile.id,
-                    tile_layer.extent,
-                    &feature.geometry,
-                    render_bounds,
-                ) {
-                    continue;
-                }
-                let context = EvaluationContext::new()
-                    .with_zoom(camera.zoom)
-                    .with_feature(feature.style.clone());
-                if !passes_filter(layer, &context) {
-                    continue;
-                }
-                matched_features += 1;
-                match layer.kind {
-                    LayerKind::Fill | LayerKind::FillExtrusion => {
-                        collect_fill(
-                            &mut fill_batches,
-                            &mut line_batches,
-                            layer,
-                            &context,
-                            camera,
-                            tile.id,
-                            tile_layer.extent,
-                            &feature.geometry,
-                        );
-                    }
-                    LayerKind::Line => collect_line(
-                        &mut line_batches,
-                        layer,
-                        &context,
-                        camera,
-                        tile.id,
-                        tile_layer.extent,
-                        &feature.geometry,
-                    ),
-                    LayerKind::Symbol => self.paint_symbol(
-                        scene,
-                        layer,
-                        &context,
-                        camera,
-                        tile.id,
-                        tile_layer.extent,
-                        feature,
-                        render_bounds,
-                    ),
-                    LayerKind::Circle => Self::paint_circle(
-                        scene,
-                        layer,
-                        &context,
-                        camera,
-                        tile.id,
-                        tile_layer.extent,
-                        &feature.geometry,
-                    ),
-                    _ => unreachable!("vector layer kind was matched above"),
-                }
-            }
-        }
-        Self::paint_vector_batches(
-            scene,
-            layer,
-            source_layer,
-            matched_features,
-            &fill_batches,
-            &line_batches,
-        );
-    }
-
-    fn paint_vector_batches(
-        scene: &mut dyn Scene2D,
-        layer: &StyleLayer,
-        source_layer: &str,
-        matched_features: usize,
-        fill_batches: &BTreeMap<ColorKey, FillBatch>,
-        line_batches: &BTreeMap<LineKey, LineBatch>,
-    ) {
-        for batch in fill_batches.values() {
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                &Brush::Solid(batch.color),
-                None,
-                &batch.path,
-            );
-        }
-        for batch in line_batches.values() {
-            scene.stroke(
-                &Stroke::new(batch.width),
-                Affine::IDENTITY,
-                &Brush::Solid(batch.color),
-                None,
-                &batch.path,
-            );
-        }
-        tracing::trace!(
-            layer = layer.id,
-            source_layer,
-            matched_features,
-            path_elements = fill_batches
-                .values()
-                .map(|batch| batch.path.elements().len())
-                .sum::<usize>()
-                + line_batches
-                    .values()
-                    .map(|batch| batch.path.elements().len())
-                    .sum::<usize>(),
-            "encoded GPU map style layer"
-        );
-    }
-
-    fn paint_symbol(
-        &mut self,
-        scene: &mut dyn Scene2D,
-        layer: &StyleLayer,
-        context: &EvaluationContext,
-        camera: Camera,
-        tile: TileId,
-        extent: u32,
         feature: &TileFeature,
-        render_bounds: Rect,
-    ) {
-        let Some(text) = property_string(layer, "text-field", context) else {
-            return;
-        };
+    ) -> Option<CachedLabel> {
+        let context = EvaluationContext::new()
+            .with_zoom(camera.zoom)
+            .with_feature(feature.style.clone());
+        if !passes_filter(layer, &context) {
+            return None;
+        }
+        let text = property_string(layer, "text-field", &context)?;
         if text.trim().is_empty() {
-            return;
+            return None;
         }
         let placement =
-            property_string(layer, "symbol-placement", context).unwrap_or_else(|| "point".into());
-        let Some((x, y, angle)) =
-            feature_label_anchor(camera, tile, extent, &feature.geometry, &placement)
-        else {
-            return;
-        };
-        if !render_bounds.contains((x, y)) {
-            return;
-        }
-        let size = property_number(layer, "text-size", context).unwrap_or(12.0) as f32;
-        let text_color = property_color(layer, "text-color", context)
+            property_string(layer, "symbol-placement", &context).unwrap_or_else(|| "point".into());
+        let (anchor_x, anchor_y, angle) = feature_label_anchor(&feature.geometry, &placement)?;
+        let size = property_number(layer, "text-size", &context).unwrap_or(12.0) as f32;
+        let color = property_color(layer, "text-color", &context)
             .unwrap_or(Color::new([0.2, 0.2, 0.2, 1.0]));
-        let halo_color = property_color(layer, "text-halo-color", context)
+        let halo_color = property_color(layer, "text-halo-color", &context)
             .unwrap_or(Color::new([1.0, 1.0, 1.0, 0.85]));
-        let halo_width = property_number(layer, "text-halo-width", context).unwrap_or(0.0);
-        let padding = property_number(layer, "text-padding", context).unwrap_or(2.0);
-        let anchor =
-            property_string(layer, "text-anchor", context).unwrap_or_else(|| "center".into());
-        let offset = property_number_pair(layer, "text-offset", context).unwrap_or((0.0, 0.0));
-        self.draw_label(
-            scene,
-            &text,
-            size,
-            (x, y),
-            &anchor,
-            (offset.0 * f64::from(size), offset.1 * f64::from(size)),
+        let halo_width = property_number(layer, "text-halo-width", &context).unwrap_or(0.0);
+        let padding = property_number(layer, "text-padding", &context).unwrap_or(2.0);
+        let text_anchor =
+            property_string(layer, "text-anchor", &context).unwrap_or_else(|| "center".into());
+        let offset = property_number_pair(layer, "text-offset", &context).unwrap_or((0.0, 0.0));
+
+        let mut builder = self
+            .layouts
+            .ranged_builder(&mut self.fonts, &text, 1.0, true);
+        builder.push_default(StyleProperty::FontSize(size));
+        builder.push_default(StyleProperty::FontFamily(
+            parley::style::GenericFamily::SansSerif.into(),
+        ));
+        let mut layout = builder.build(&text);
+        layout.break_all_lines(None);
+        let (width, height) = (f64::from(layout.width()), f64::from(layout.height()));
+        let mut runs = Vec::new();
+        for line in layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let run = glyph_run.run();
+                runs.push(LabelRun {
+                    font: run.font().clone(),
+                    font_size: run.font_size(),
+                    coords: Arc::<[i16]>::from(run.normalized_coords()),
+                    glyphs: glyphs(&glyph_run),
+                });
+            }
+        }
+        if runs.is_empty() {
+            return None;
+        }
+        let byte_len = tile_bytes(
+            text.len()
+                + runs
+                    .iter()
+                    .map(|run| {
+                        run.glyphs.len() * size_of::<Glyph>()
+                            + run.coords.len() * size_of::<i16>()
+                            + 64
+                    })
+                    .sum::<usize>()
+                + 256,
+        );
+        Some(CachedLabel {
+            anchor: (anchor_x, anchor_y),
             angle,
+            offset: (offset.0 * f64::from(size), offset.1 * f64::from(size)),
+            text_anchor: text_anchor.into(),
             padding,
-            text_color,
+            color,
             halo_color,
             halo_width,
-        );
+            width,
+            height,
+            runs: runs.into(),
+            byte_len,
+        })
     }
 
+    /// The per-frame half of label painting: run collision against
+    /// `occupied_labels` at the already-projected position and emit the
+    /// cached runs under the label transform.
+    fn emit_label(
+        &mut self,
+        scene: &mut impl ReplayDraw,
+        label: &CachedLabel,
+        position: (f64, f64),
+        registrations: &mut Registrations,
+        resources: &dyn Resources,
+    ) {
+        let origin = label_origin(
+            position,
+            label.offset,
+            label.width,
+            label.height,
+            &label.text_anchor,
+        );
+        let rotated_width = f64::mul_add(
+            label.height,
+            label.angle.sin().abs(),
+            label.width * label.angle.cos().abs(),
+        );
+        let rotated_height = f64::mul_add(
+            label.height,
+            label.angle.cos().abs(),
+            label.width * label.angle.sin().abs(),
+        );
+        let center = (
+            f64::mul_add(label.width, 0.5, origin.0),
+            f64::mul_add(label.height, 0.5, origin.1),
+        );
+        let bounds = Rect::new(
+            rotated_width.mul_add(-0.5, center.0) - label.padding,
+            rotated_height.mul_add(-0.5, center.1) - label.padding,
+            rotated_width.mul_add(0.5, center.0) + label.padding,
+            rotated_height.mul_add(0.5, center.1) + label.padding,
+        );
+        if self
+            .occupied_labels
+            .iter()
+            .any(|occupied| occupied.overlaps(bounds))
+        {
+            return;
+        }
+        self.occupied_labels.push(bounds);
+        let transform = Affine::translate(center)
+            * Affine::rotate(label.angle)
+            * Affine::translate((-label.width * 0.5, -label.height * 0.5));
+        let halo_stroke = Stroke::new(label.halo_width * 2.0);
+        for run in &label.runs {
+            let Some(font) = registrations.font(&run.font, resources) else {
+                continue;
+            };
+            let run_of = |style: GlyphStyle| GlyphRun {
+                font,
+                size: run.font_size,
+                coords: Arc::clone(&run.coords),
+                glyphs: Arc::clone(&run.glyphs),
+                style,
+            };
+            // The halo is the same run painted underneath as a thick
+            // stroke, so the fill that follows reads against any basemap.
+            scene.transform(Fixed(transform), |scene| {
+                if label.halo_width > 0.0 {
+                    scene.glyphs(
+                        Fixed(run_of(GlyphStyle::Stroke(halo_stroke.clone()))),
+                        Fixed(Paint::from(label.halo_color)),
+                    );
+                }
+                scene.glyphs(
+                    Fixed(run_of(GlyphStyle::Fill)),
+                    Fixed(Paint::from(label.color)),
+                );
+            });
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "label layout carries the full MapLibre text stack"
+    )]
     fn draw_label(
         &mut self,
-        scene: &mut dyn Scene2D,
+        scene: &mut impl ReplayDraw,
         text: &str,
         size: f32,
         anchor: (f64, f64),
@@ -2890,6 +2781,8 @@ impl MapPainter {
         color: Color,
         halo_color: Color,
         halo_width: f64,
+        registrations: &mut Registrations,
+        resources: &dyn Resources,
     ) {
         let mut builder = self
             .layouts
@@ -2933,30 +2826,29 @@ impl MapPainter {
                     continue;
                 };
                 let run = glyph_run.run();
-                let glyphs = glyphs(&glyph_run);
+                let Some(font) = registrations.font(run.font(), resources) else {
+                    continue;
+                };
+                let coords = Arc::<[i16]>::from(run.normalized_coords());
+                let run_glyphs = glyphs(&glyph_run);
+                let run_of = |style: GlyphStyle| GlyphRun {
+                    font,
+                    size: run.font_size(),
+                    coords: Arc::clone(&coords),
+                    glyphs: Arc::clone(&run_glyphs),
+                    style,
+                };
                 // The halo is the same run painted underneath as a thick
                 // stroke, so the fill that follows reads against any basemap.
-                if halo_width > 0.0 {
-                    scene.draw_glyph_run(&GlyphRun {
-                        font: run.font(),
-                        font_size: run.font_size(),
-                        normalized_coords: run.normalized_coords(),
-                        transform,
-                        brush: &Brush::Solid(halo_color),
-                        brush_alpha: 1.0,
-                        style: StyleRef::Stroke(&halo_stroke),
-                        glyphs: &glyphs,
-                    });
-                }
-                scene.draw_glyph_run(&GlyphRun {
-                    font: run.font(),
-                    font_size: run.font_size(),
-                    normalized_coords: run.normalized_coords(),
-                    transform,
-                    brush: &Brush::Solid(color),
-                    brush_alpha: 1.0,
-                    style: StyleRef::Fill(Fill::NonZero),
-                    glyphs: &glyphs,
+                let fill_run = run_of(GlyphStyle::Fill);
+                scene.transform(Fixed(transform), |scene| {
+                    if halo_width > 0.0 {
+                        scene.glyphs(
+                            Fixed(run_of(GlyphStyle::Stroke(halo_stroke.clone()))),
+                            Fixed(Paint::from(halo_color)),
+                        );
+                    }
+                    scene.glyphs(Fixed(fill_run), Fixed(Paint::from(color)));
                 });
             }
         }
@@ -2964,23 +2856,22 @@ impl MapPainter {
 
     fn paint_annotations(
         &mut self,
-        scene: &mut dyn Scene2D,
+        scene: &mut impl ReplayDraw,
         camera: Camera,
         annotations: &[Annotation],
+        registrations: &mut Registrations,
+        resources: &dyn Resources,
     ) {
         for annotation in annotations {
-            let (x, y) = camera.coordinate_point(annotation.coordinate);
-            let marker = Circle::new((x, y), 6.0).to_path(0.1);
+            let (x, y) = camera.coordinate_point(annotation.coordinate());
+            let marker = ShapeData::of(&Circle::new((x, y), 6.0).to_path(0.1));
             scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                &Brush::Solid(Color::new([0.86, 0.12, 0.18, 1.0])),
-                None,
-                &marker,
+                Fixed(marker),
+                Fixed(Paint::from(Color::new([0.86, 0.12, 0.18, 1.0]))),
             );
             self.draw_label(
                 scene,
-                annotation.title.as_str(),
+                annotation.title().as_str(),
                 13.0,
                 (x, y - 15.0),
                 "center",
@@ -2990,53 +2881,44 @@ impl MapPainter {
                 Color::new([0.12, 0.12, 0.14, 1.0]),
                 Color::new([1.0, 1.0, 1.0, 0.95]),
                 1.5,
+                registrations,
+                resources,
             );
         }
     }
 
-    fn paint_location(scene: &mut dyn Scene2D, camera: Camera, location: &Location) {
+    fn paint_location(scene: &mut impl ReplayDraw, camera: Camera, location: &Location) {
         let coordinate = Coordinate::from_location(location);
         let (x, y) = camera.coordinate_point(coordinate);
         if let Some(accuracy) = location.horizontal_accuracy() {
             let radius = camera
                 .meters_to_pixels(location.latitude().get(), accuracy)
                 .max(4.0);
-            let accuracy_circle = Circle::new((x, y), radius).to_path(0.2);
+            let accuracy_circle = ShapeData::of(&Circle::new((x, y), radius).to_path(0.2));
             scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                &Brush::Solid(Color::new([0.08, 0.45, 0.95, 0.14])),
-                None,
-                &accuracy_circle,
+                Fixed(accuracy_circle.clone()),
+                Fixed(Paint::from(Color::new([0.08, 0.45, 0.95, 0.14]))),
             );
             scene.stroke(
-                &Stroke::new(1.0),
-                Affine::IDENTITY,
-                &Brush::Solid(Color::new([0.08, 0.45, 0.95, 0.38])),
-                None,
-                &accuracy_circle,
+                Fixed(accuracy_circle),
+                Fixed(Stroke::new(1.0)),
+                Fixed(Paint::from(Color::new([0.08, 0.45, 0.95, 0.38]))),
             );
         }
-        let outer = Circle::new((x, y), 8.0).to_path(0.1);
+        let outer = ShapeData::of(&Circle::new((x, y), 8.0).to_path(0.1));
         scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            &Brush::Solid(Color::new([1.0, 1.0, 1.0, 1.0])),
-            None,
-            &outer,
+            Fixed(outer),
+            Fixed(Paint::from(Color::new([1.0, 1.0, 1.0, 1.0]))),
         );
-        let inner = Circle::new((x, y), 5.5).to_path(0.1);
+        let inner = ShapeData::of(&Circle::new((x, y), 5.5).to_path(0.1));
         scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            &Brush::Solid(Color::new([0.05, 0.42, 0.95, 1.0])),
-            None,
-            &inner,
+            Fixed(inner),
+            Fixed(Paint::from(Color::new([0.05, 0.42, 0.95, 1.0]))),
         );
     }
 }
 
-fn glyphs(glyph_run: &parley::GlyphRun<'_, [u8; 4]>) -> Vec<Glyph> {
+fn glyphs(glyph_run: &parley::GlyphRun<'_, [u8; 4]>) -> Arc<[Glyph]> {
     let mut run_x = glyph_run.offset();
     let run_y = glyph_run.baseline();
     glyph_run
@@ -3045,26 +2927,27 @@ fn glyphs(glyph_run: &parley::GlyphRun<'_, [u8; 4]>) -> Vec<Glyph> {
             let x = run_x + glyph.x;
             let y = run_y - glyph.y;
             run_x += glyph.advance;
-            Glyph { id: glyph.id, x, y }
+            Glyph {
+                id: glyph.id,
+                x,
+                y,
+                transform: None,
+            }
         })
         .collect()
 }
 
-fn fill_viewport(scene: &mut dyn Scene2D, viewport: Viewport, color: Color) {
-    let path = Rect::new(
-        0.0,
-        0.0,
-        f64::from(viewport.width),
-        f64::from(viewport.height),
-    )
-    .to_path(0.1);
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        &Brush::Solid(color),
-        None,
-        &path,
+fn fill_viewport(scene: &mut impl ReplayDraw, viewport: Viewport, color: Color) {
+    let path = ShapeData::of(
+        &Rect::new(
+            0.0,
+            0.0,
+            f64::from(viewport.width),
+            f64::from(viewport.height),
+        )
+        .to_path(0.1),
     );
+    scene.fill(Fixed(path), Fixed(Paint::from(color)));
 }
 
 fn passes_filter(layer: &StyleLayer, context: &EvaluationContext) -> bool {
@@ -3081,7 +2964,7 @@ struct ColorKey([u32; 4]);
 
 impl ColorKey {
     fn new(color: Color) -> Self {
-        Self(color.components.map(f32::to_bits))
+        Self(color.components().map(f32::to_bits))
     }
 }
 
@@ -3089,12 +2972,6 @@ impl ColorKey {
 struct LineKey {
     color: ColorKey,
     width: u64,
-}
-
-/// Erases an owned pixel buffer into the shape `peniko::Blob` accepts, so image
-/// tiles reach the scene without another copy.
-fn image_blob(pixels: Arc<Vec<u8>>) -> Arc<dyn AsRef<[u8]> + Send + Sync> {
-    pixels
 }
 
 /// A viewport-sized scalar density field used to rasterize `heatmap` layers.
@@ -3171,21 +3048,22 @@ impl HeatmapField {
             let Some(color) = property_color(layer, "heatmap-color", &context) else {
                 continue;
             };
+            let components = color.components();
             for (channel, value) in texel.iter_mut().take(3).enumerate() {
-                *value = channel_byte(color.components[channel]);
+                *value = channel_byte(components[channel]);
             }
-            texel[3] = channel_byte(color.components[3]);
+            texel[3] = channel_byte(components[3]);
         }
         Some(pixels)
     }
 }
 
-/// Maps an image tile's pixel grid onto the screen rect its tile id covers.
+/// The screen rect an image tile's pixel grid occupies under `camera`.
 ///
 /// `tile_point` already places tile-local coordinates for an arbitrary extent,
-/// so passing the image's pixel size as the extent yields both the tile's
-/// screen origin and the scale that maps one texel to device pixels.
-fn tile_image_transform(camera: Camera, tile: TileId, size: u32) -> Affine {
+/// so passing the image's pixel size as the extent maps texels straight to
+/// device pixels.
+fn tile_image_rect(camera: Camera, tile: TileId, size: u32) -> Rect {
     #[allow(
         clippy::cast_precision_loss,
         reason = "raster tile pixel sizes are small powers of two"
@@ -3193,8 +3071,17 @@ fn tile_image_transform(camera: Camera, tile: TileId, size: u32) -> Affine {
     let extent = size as f32;
     let (x0, y0) = camera.tile_point(tile, size, 0.0, 0.0);
     let (x1, y1) = camera.tile_point(tile, size, extent, extent);
-    Affine::translate((x0, y0))
-        * Affine::scale_non_uniform((x1 - x0) / f64::from(size), (y1 - y0) / f64::from(size))
+    Rect::new(x0, y0, x1, y1)
+}
+
+/// The screen rect of a raster tile's image, following the live camera.
+fn image_rect(
+    live: &Binding<Camera>,
+    tile: TileId,
+    size: u32,
+) -> impl nami::Signal<Output = Rect> + use<> {
+    live.clone()
+        .map(move |camera| tile_image_rect(camera, tile, size))
 }
 
 #[allow(
@@ -3314,10 +3201,11 @@ fn shade_dem_row(
         } else {
             (highlight, illumination)
         };
+        let components = color.components();
         for (channel, value) in texel.iter_mut().take(3).enumerate() {
-            *value = channel_byte(color.components[channel]);
+            *value = channel_byte(components[channel]);
         }
-        texel[3] = channel_byte(color.components[3] * weight);
+        texel[3] = channel_byte(components[3] * weight);
     }
 }
 
@@ -3347,17 +3235,18 @@ fn geometry_points(geometry: &Geometry<f32>) -> Vec<Coord<f32>> {
         | Geometry::Triangle(_)
         | Geometry::GeometryCollection(_) => geometry
             .bounding_rect()
-            .map(|bounds| vec![bounds.center()])
-            .unwrap_or_default(),
+            .map_or_default(|bounds| vec![bounds.center()]),
     }
 }
 
+/// One colour's collected fill geometries for a style layer.
 #[derive(Debug)]
 struct FillBatch {
     color: Color,
     path: BezPath,
 }
 
+/// One `(color, width)` pair's collected stroke geometries for a style layer.
 #[derive(Debug)]
 struct LineBatch {
     color: Color,
@@ -3365,18 +3254,167 @@ struct LineBatch {
     path: BezPath,
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "fill batching keeps style, projection, and MVT geometry inputs explicit"
-)]
+/// Emits a fill batch as a single draw: merging the whole layer's
+/// same-colour geometry into one path covers the same winding region split
+/// ops would, and one draw composites a translucent colour's alpha once over
+/// every overlap, which split ops would darken.
+fn emit_fill_batch(scene: &mut impl ReplayDraw, batch: &FillBatch) {
+    scene.fill(
+        Fixed(ShapeData::of(&batch.path)),
+        Fixed(Paint::from(batch.color)),
+    );
+}
+
+/// Emits a stroke batch under the same whole-layer merge as
+/// [`emit_fill_batch`].
+fn emit_line_batch(scene: &mut impl ReplayDraw, batch: &LineBatch) {
+    scene.stroke(
+        Fixed(ShapeData::of(&batch.path)),
+        Fixed(Stroke::new(batch.width)),
+        Fixed(Paint::from(batch.color)),
+    );
+}
+
+/// Geometry conversion between an MVT layer's coordinate system and the
+/// recorded tile picture's.
+///
+/// Tile pictures draw in a tile-local square [`TILE_SIZE`] units on a side:
+/// `to_path` scales extent units into that space, `to_local` scales screen
+/// pixels (stroke widths, circle radii, clip pads) into it at the record
+/// camera's zoom, and `units_per_pixel` is extent units per screen pixel —
+/// the simplification tolerance unit. One antialiased pixel is kept outside
+/// every clip boundary so strokes centred on it are never shaved.
+struct TileSpace {
+    extent: u32,
+    to_path: f64,
+    to_local: f64,
+    units_per_pixel: f32,
+}
+
+impl TileSpace {
+    fn new(camera: Camera, tile: TileId, extent: u32) -> Self {
+        let tile_scale = (camera.zoom - f64::from(tile.z)).exp2();
+        Self {
+            extent,
+            to_path: f64::from(TILE_SIZE) / f64::from(extent),
+            to_local: 1.0 / tile_scale,
+            units_per_pixel: camera.tile_units_per_pixel(tile.z, extent),
+        }
+    }
+
+    /// Screen pixels to clip pad in extent units.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a clip pad in MVT extent units stays well inside f32 range"
+    )]
+    fn pad(&self, pixels: f64) -> f32 {
+        (pixels * f64::from(self.units_per_pixel)) as f32
+    }
+}
+
+/// The antialiased pixel kept beyond each clip boundary.
+const ANTIALIAS_PIXEL: f64 = 1.0;
+
+/// Records one style layer of one vector tile into a [`TilePicture`].
+///
+/// Property evaluation and simplification run against `camera` — the camera
+/// the picture was first needed at; replay under a moved camera scales the
+/// whole tile, stroke widths included, exactly as the old whole-viewport
+/// picture did. The batching is per tile: a feature never merges into a path
+/// belonging to another tile, so no path grows with the viewport.
+fn record_tile_layer(
+    layer: &StyleLayer,
+    camera: Camera,
+    tile: &VectorTile,
+    source_layer: &str,
+) -> TilePicture {
+    let mut fill_batches = BTreeMap::<ColorKey, FillBatch>::new();
+    let mut line_batches = BTreeMap::<LineKey, LineBatch>::new();
+    let (mut matched_features, mut path_elements, mut max_path_elements) =
+        (0_usize, 0_usize, 0_usize);
+    if let Some(tile_layer) = tile.layers.get(source_layer) {
+        let space = TileSpace::new(camera, tile.id, tile_layer.extent);
+        for feature in &tile_layer.features {
+            let context = EvaluationContext::new()
+                .with_zoom(camera.zoom)
+                .with_feature(feature.style.clone());
+            if !passes_filter(layer, &context) {
+                continue;
+            }
+            matched_features += 1;
+            match layer.kind {
+                LayerKind::Fill | LayerKind::FillExtrusion => collect_fill(
+                    &mut fill_batches,
+                    &mut line_batches,
+                    layer,
+                    &context,
+                    &space,
+                    &feature.geometry,
+                ),
+                LayerKind::Line => collect_line(
+                    &mut line_batches,
+                    layer,
+                    &context,
+                    &space,
+                    &feature.geometry,
+                ),
+                LayerKind::Circle => collect_circle(
+                    &mut fill_batches,
+                    &mut line_batches,
+                    layer,
+                    &context,
+                    &space,
+                    &feature.geometry,
+                ),
+                _ => unreachable!("only batched vector kinds record tile pictures"),
+            }
+        }
+    }
+    let picture = Picture::record(|scene| {
+        for batch in fill_batches.values() {
+            emit_fill_batch(scene, batch);
+        }
+        for batch in line_batches.values() {
+            emit_line_batch(scene, batch);
+        }
+    });
+    for elements in fill_batches
+        .values()
+        .map(|batch| batch.path.elements().len())
+        .chain(
+            line_batches
+                .values()
+                .map(|batch| batch.path.elements().len()),
+        )
+    {
+        path_elements += elements;
+        max_path_elements = max_path_elements.max(elements);
+    }
+    tracing::trace!(
+        layer = layer.id,
+        source_layer,
+        tile = ?tile.id,
+        matched_features,
+        path_elements,
+        "recorded GPU map tile picture"
+    );
+    TilePicture {
+        picture,
+        // The estimate the shared byte budget charges: every batched path
+        // element plus a flat display-list overhead.
+        byte_len: (path_elements as u64)
+            .saturating_mul(size_of::<PathEl>() as u64)
+            .saturating_add(512),
+        max_path_elements,
+    }
+}
+
 fn collect_fill(
     fills: &mut BTreeMap<ColorKey, FillBatch>,
     lines: &mut BTreeMap<LineKey, LineBatch>,
     layer: &StyleLayer,
     context: &EvaluationContext,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
+    space: &TileSpace,
     geometry: &Geometry<f32>,
 ) {
     let color_property = if layer.kind == LayerKind::FillExtrusion {
@@ -3396,30 +3434,36 @@ fn collect_fill(
         color,
         property_number(layer, opacity_property, context).unwrap_or(1.0),
     );
-    let Some(path) = geometry_path(camera, tile, extent, geometry, true) else {
+    let outline = property_color(layer, "fill-outline-color", context);
+    // The stroke drawing over this geometry is the 1px outline (if any);
+    // buffer duplicates may paint half that width plus one antialiased pixel
+    // past the tile edge and no further.
+    let pad = space.pad(outline.map_or(0.0, |_| 0.5) + ANTIALIAS_PIXEL);
+    if !feature_in_bounds(geometry, space.extent, pad) {
         return;
-    };
-    let key = ColorKey::new(color);
-    fills
-        .entry(key)
-        .or_insert_with(|| FillBatch {
-            color,
-            path: BezPath::new(),
-        })
-        .path
-        .extend(path.elements().iter().copied());
-    if let Some(outline) = property_color(layer, "fill-outline-color", context)
-        && let Some(path) = fill_outline_path(camera, tile, extent, geometry)
+    }
+    if let Some(path) = clipped_geometry_path(space, geometry, pad, true) {
+        fills
+            .entry(ColorKey::new(color))
+            .or_insert_with(|| FillBatch {
+                color,
+                path: BezPath::new(),
+            })
+            .path
+            .extend(path.elements().iter().copied());
+    }
+    if let Some(outline) = outline
+        && let Some(path) = clipped_outline_path(space, geometry, pad)
     {
         let key = LineKey {
             color: ColorKey::new(outline),
-            width: 1.0_f64.to_bits(),
+            width: space.to_local.to_bits(),
         };
         lines
             .entry(key)
             .or_insert_with(|| LineBatch {
                 color: outline,
-                width: 1.0,
+                width: space.to_local,
                 path: BezPath::new(),
             })
             .path
@@ -3431,9 +3475,7 @@ fn collect_line(
     lines: &mut BTreeMap<LineKey, LineBatch>,
     layer: &StyleLayer,
     context: &EvaluationContext,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
+    space: &TileSpace,
     geometry: &Geometry<f32>,
 ) {
     let Some(mut color) = property_color(layer, "line-color", context) else {
@@ -3448,11 +3490,18 @@ fn collect_line(
         .mul_add(
             2.0,
             property_number(layer, "line-width", context).unwrap_or(1.0),
-        );
-    let Some(path) = geometry_path(camera, tile, extent, geometry, false) else {
+        )
+        .max(0.0);
+    let pad = space.pad(width.mul_add(0.5, ANTIALIAS_PIXEL));
+    if !feature_in_bounds(geometry, space.extent, pad) {
+        return;
+    }
+    let Some(path) = clipped_geometry_path(space, geometry, pad, false) else {
         return;
     };
-    let width = width.max(0.0);
+    // Stroke widths are recorded in tile-local units, so the replayed
+    // transform puts them back on screen in pixels.
+    let width = width * space.to_local;
     let key = LineKey {
         color: ColorKey::new(color),
         width: width.to_bits(),
@@ -3466,6 +3515,83 @@ fn collect_line(
         })
         .path
         .extend(path.elements().iter().copied());
+}
+
+/// Collects one `circle` feature into the same colour/width batches as the
+/// polygon layers: a disc per geometry point, in tile-local units.
+fn collect_circle(
+    fills: &mut BTreeMap<ColorKey, FillBatch>,
+    lines: &mut BTreeMap<LineKey, LineBatch>,
+    layer: &StyleLayer,
+    context: &EvaluationContext,
+    space: &TileSpace,
+    geometry: &Geometry<f32>,
+) {
+    let radius = property_number(layer, "circle-radius", context).unwrap_or(5.0);
+    if radius <= 0.0 {
+        return;
+    }
+    let fill = property_color(layer, "circle-color", context).map(|color| {
+        color_with_opacity(
+            color,
+            property_number(layer, "circle-opacity", context).unwrap_or(1.0),
+        )
+    });
+    let stroke_width = property_number(layer, "circle-stroke-width", context).unwrap_or(0.0);
+    let stroke = (stroke_width > 0.0)
+        .then(|| property_color(layer, "circle-stroke-color", context))
+        .flatten()
+        .map(|color| {
+            color_with_opacity(
+                color,
+                property_number(layer, "circle-stroke-opacity", context).unwrap_or(1.0),
+            )
+        });
+    if fill.is_none() && stroke.is_none() {
+        return;
+    }
+    let pad = space.pad(stroke_width.mul_add(0.5, radius + ANTIALIAS_PIXEL));
+    let extent = gpu_scalar(space.extent);
+    let radius = radius * space.to_local;
+    for point in geometry_points(geometry) {
+        if point.x < -pad || point.y < -pad || point.x > extent + pad || point.y > extent + pad {
+            continue;
+        }
+        let disc = Circle::new(
+            (
+                f64::from(point.x) * space.to_path,
+                f64::from(point.y) * space.to_path,
+            ),
+            radius,
+        )
+        .to_path(0.1);
+        if let Some(fill) = fill {
+            fills
+                .entry(ColorKey::new(fill))
+                .or_insert_with(|| FillBatch {
+                    color: fill,
+                    path: BezPath::new(),
+                })
+                .path
+                .extend(disc.elements().iter().copied());
+        }
+        if let Some(stroke) = stroke {
+            let width = stroke_width * space.to_local;
+            let key = LineKey {
+                color: ColorKey::new(stroke),
+                width: width.to_bits(),
+            };
+            lines
+                .entry(key)
+                .or_insert_with(|| LineBatch {
+                    color: stroke,
+                    width,
+                    path: BezPath::new(),
+                })
+                .path
+                .extend(disc.elements().iter().copied());
+        }
+    }
 }
 
 fn property_value(layer: &StyleLayer, name: &str, context: &EvaluationContext) -> Option<Value> {
@@ -3522,7 +3648,7 @@ fn property_number_pair(
 
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "MapLibre f64 color channels are intentionally converted to peniko f32 channels"
+    reason = "MapLibre f64 color channels are intentionally converted to f32 channels"
 )]
 fn property_color(layer: &StyleLayer, name: &str, context: &EvaluationContext) -> Option<Color> {
     property_value(layer, name, context).map(|value| {
@@ -3540,10 +3666,10 @@ fn property_color(layer: &StyleLayer, name: &str, context: &EvaluationContext) -
 
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "MapLibre f64 opacity is clamped before conversion to peniko f32"
+    reason = "MapLibre f64 opacity is clamped before conversion to f32"
 )]
 fn color_with_opacity(color: Color, opacity: f64) -> Color {
-    let [red, green, blue, alpha] = color.components;
+    let [red, green, blue, alpha] = color.components();
     Color::new([red, green, blue, alpha * opacity.clamp(0.0, 1.0) as f32])
 }
 
@@ -3569,56 +3695,25 @@ fn label_origin(
     (x, y)
 }
 
-fn geometry_path(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
+/// `geometry` clipped to the tile extent grown by `pad`, then emitted as a
+/// path in tile-local units. Clipping keeps buffer duplicates from
+/// overlapping and keeps off-tile segments out of the stroke entirely.
+fn clipped_geometry_path(
+    space: &TileSpace,
     geometry: &Geometry<f32>,
+    pad: f32,
     close: bool,
 ) -> Option<BezPath> {
     let mut path = BezPath::new();
-    let tolerance = camera.tile_units_per_pixel(tile.z, extent) * 2.0;
     match geometry {
-        Geometry::LineString(line) => {
-            add_line(
-                &mut path,
-                camera,
-                tile,
-                extent,
-                &line.simplify(tolerance),
-                close,
-            );
-        }
-        Geometry::MultiLineString(lines) => {
-            for line in &lines.0 {
-                add_line(
-                    &mut path,
-                    camera,
-                    tile,
-                    extent,
-                    &line.simplify(tolerance),
-                    close,
-                );
+        Geometry::LineString(_) | Geometry::MultiLineString(_) => {
+            for line in clipped_lines(space, geometry, pad).0 {
+                add_line(&mut path, &line, space.to_path, close);
             }
         }
-        Geometry::Polygon(polygon) => {
-            add_polygon(
-                &mut path,
-                camera,
-                tile,
-                extent,
-                &polygon.simplify(tolerance),
-            );
-        }
-        Geometry::MultiPolygon(polygons) => {
-            for polygon in &polygons.0 {
-                add_polygon(
-                    &mut path,
-                    camera,
-                    tile,
-                    extent,
-                    &polygon.simplify(tolerance),
-                );
+        Geometry::Polygon(_) | Geometry::MultiPolygon(_) => {
+            for polygon in clipped_polygons(space, geometry, pad).0 {
+                add_polygon(&mut path, &polygon, space.to_path);
             }
         }
         _ => return None,
@@ -3626,38 +3721,83 @@ fn geometry_path(
     (!path.is_empty()).then_some(path)
 }
 
-fn fill_outline_path(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    geometry: &Geometry<f32>,
-) -> Option<BezPath> {
+/// The fill-outline variant of [`clipped_geometry_path`]: only polygon
+/// geometry contributes, and ring segments running along a clip boundary —
+/// the vector-tile encoder's at `0`/`extent` or ours at `±pad` — are skipped
+/// so no artificial seam is stroked.
+fn clipped_outline_path(space: &TileSpace, geometry: &Geometry<f32>, pad: f32) -> Option<BezPath> {
     let mut path = BezPath::new();
-    let tolerance = camera.tile_units_per_pixel(tile.z, extent) * 2.0;
     match geometry {
-        Geometry::Polygon(polygon) => {
-            add_polygon_outline(
-                &mut path,
-                camera,
-                tile,
-                extent,
-                &polygon.simplify(tolerance),
-            );
-        }
-        Geometry::MultiPolygon(polygons) => {
-            for polygon in &polygons.0 {
-                add_polygon_outline(
-                    &mut path,
-                    camera,
-                    tile,
-                    extent,
-                    &polygon.simplify(tolerance),
-                );
+        Geometry::Polygon(_) | Geometry::MultiPolygon(_) => {
+            for polygon in clipped_polygons(space, geometry, pad).0 {
+                add_polygon_outline(&mut path, &polygon, space, pad);
             }
         }
         _ => return None,
     }
     (!path.is_empty()).then_some(path)
+}
+
+/// The tile's clip rectangle as a `geo` polygon: the extent grown by `pad`
+/// on every side.
+fn tile_clip_polygon(extent: u32, pad: f32) -> Polygon<f32> {
+    let edge = gpu_scalar(extent) + pad;
+    Polygon::new(
+        LineString::from(vec![
+            (-pad, -pad),
+            (edge, -pad),
+            (edge, edge),
+            (-pad, edge),
+            (-pad, -pad),
+        ]),
+        Vec::new(),
+    )
+}
+
+/// Line geometry simplified and clipped to the expanded tile extent.
+fn clipped_lines(space: &TileSpace, geometry: &Geometry<f32>, pad: f32) -> MultiLineString<f32> {
+    let tolerance = space.units_per_pixel * 2.0;
+    let lines = match geometry {
+        Geometry::LineString(line) => vec![line.simplify(tolerance)],
+        Geometry::MultiLineString(lines) => lines
+            .0
+            .iter()
+            .map(|line| line.simplify(tolerance))
+            .collect(),
+        _ => return MultiLineString::new(Vec::new()),
+    };
+    tile_clip_polygon(space.extent, pad).clip(&MultiLineString::new(lines), false)
+}
+
+/// Polygon geometry simplified and intersected with the expanded tile
+/// extent.
+fn clipped_polygons(space: &TileSpace, geometry: &Geometry<f32>, pad: f32) -> MultiPolygon<f32> {
+    let tolerance = space.units_per_pixel * 2.0;
+    let subject = match geometry {
+        Geometry::Polygon(polygon) => MultiPolygon::new(vec![polygon.simplify(tolerance)]),
+        Geometry::MultiPolygon(polygons) => MultiPolygon::new(
+            polygons
+                .0
+                .iter()
+                .map(|polygon| polygon.simplify(tolerance))
+                .collect(),
+        ),
+        _ => return MultiPolygon::new(Vec::new()),
+    };
+    subject.intersection(&tile_clip_polygon(space.extent, pad))
+}
+
+/// Whether any part of `geometry` can lie inside the tile extent grown by
+/// `pad`, judged by its extent-space bounding rect.
+fn feature_in_bounds(geometry: &Geometry<f32>, extent: u32, pad: f32) -> bool {
+    let Some(bounds) = geometry.bounding_rect() else {
+        return true;
+    };
+    let edge = gpu_scalar(extent) + pad;
+    bounds.min().x <= edge
+        && bounds.max().x >= -pad
+        && bounds.min().y <= edge
+        && bounds.max().y >= -pad
 }
 
 fn camera_render_bounds(camera: Camera) -> Rect {
@@ -3690,137 +3830,105 @@ fn feature_visible(
     feature_bounds.overlaps(render_bounds)
 }
 
-fn add_polygon(
-    path: &mut BezPath,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    polygon: &Polygon<f32>,
-) {
-    add_line(path, camera, tile, extent, polygon.exterior(), true);
+fn add_polygon(path: &mut BezPath, polygon: &Polygon<f32>, scale: f64) {
+    add_line(path, polygon.exterior(), scale, true);
     for interior in polygon.interiors() {
-        add_line(path, camera, tile, extent, interior, true);
+        add_line(path, interior, scale, true);
     }
 }
 
-fn add_polygon_outline(
-    path: &mut BezPath,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    polygon: &Polygon<f32>,
-) {
-    add_ring_outline(path, camera, tile, extent, polygon.exterior());
+fn add_polygon_outline(path: &mut BezPath, polygon: &Polygon<f32>, space: &TileSpace, pad: f32) {
+    add_ring_outline(path, polygon.exterior(), space, pad);
     for interior in polygon.interiors() {
-        add_ring_outline(path, camera, tile, extent, interior);
+        add_ring_outline(path, interior, space, pad);
     }
 }
 
-fn add_ring_outline(
-    path: &mut BezPath,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    ring: &LineString<f32>,
-) {
-    let tile_extent = gpu_scalar(extent);
+fn add_ring_outline(path: &mut BezPath, ring: &LineString<f32>, space: &TileSpace, pad: f32) {
     let mut previous_end = None;
     for segment in ring.0.windows(2) {
         let [start, end] = [segment[0], segment[1]];
-        if tile_boundary_segment(start, end, tile_extent) {
+        if boundary_segment(start, end, space.extent, pad) {
             previous_end = None;
             continue;
         }
         if previous_end != Some(start) {
-            path.move_to(camera.tile_point(tile, extent, start.x, start.y));
+            path.move_to((
+                f64::from(start.x) * space.to_path,
+                f64::from(start.y) * space.to_path,
+            ));
         }
-        path.line_to(camera.tile_point(tile, extent, end.x, end.y));
+        path.line_to((
+            f64::from(end.x) * space.to_path,
+            f64::from(end.y) * space.to_path,
+        ));
         previous_end = Some(end);
     }
 }
 
-const fn tile_boundary_segment(start: Coord<f32>, end: Coord<f32>, extent: f32) -> bool {
-    let zero = 0.0_f32.to_bits();
-    let extent = extent.to_bits();
-    (start.x.to_bits() == zero && end.x.to_bits() == zero)
-        || (start.y.to_bits() == zero && end.y.to_bits() == zero)
-        || (start.x.to_bits() == extent && end.x.to_bits() == extent)
-        || (start.y.to_bits() == extent && end.y.to_bits() == extent)
+/// A segment lying on an artificial edge: the vector-tile encoder's clip
+/// lines at `0`/`extent`, or this clip's at `-pad`/`extent+pad`.
+fn boundary_segment(start: Coord<f32>, end: Coord<f32>, extent: u32, pad: f32) -> bool {
+    let edge = gpu_scalar(extent);
+    let on_seam = |a: f32, b: f32| {
+        a.to_bits() == b.to_bits()
+            && (a.to_bits() == 0.0_f32.to_bits()
+                || a.to_bits() == edge.to_bits()
+                || a.to_bits() == (-pad).to_bits()
+                || a.to_bits() == (edge + pad).to_bits())
+    };
+    on_seam(start.x, end.x) || on_seam(start.y, end.y)
 }
 
-fn add_line(
-    path: &mut BezPath,
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    line: &LineString<f32>,
-    close: bool,
-) {
+fn add_line(path: &mut BezPath, line: &LineString<f32>, scale: f64, close: bool) {
     let mut points = line.points();
     let Some(first) = points.next() else {
         return;
     };
-    path.move_to(camera.tile_point(tile, extent, first.x(), first.y()));
+    path.move_to((f64::from(first.x()) * scale, f64::from(first.y()) * scale));
     for point in points {
-        path.line_to(camera.tile_point(tile, extent, point.x(), point.y()));
+        path.line_to((f64::from(point.x()) * scale, f64::from(point.y()) * scale));
     }
     if close {
         path.close_path();
     }
 }
 
-fn feature_label_anchor(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    geometry: &Geometry<f32>,
-    placement: &str,
-) -> Option<(f64, f64, f64)> {
+/// The label anchor in the tile layer's extent units: the feature's point,
+/// a line's midpoint (plus its angle for `symbol-placement: line`), or a
+/// polygon's centroid. Camera-independent, so it caches with the shaped
+/// label and projects once per frame via [`Camera::tile_point`].
+fn feature_label_anchor(geometry: &Geometry<f32>, placement: &str) -> Option<(f32, f32, f64)> {
     let line_placement = match placement {
         "point" => false,
         "line" | "line-center" => true,
         other => panic!("unsupported MapLibre symbol-placement {other}"),
     };
     match geometry {
-        Geometry::Point(point) => {
-            let (x, y) = camera.tile_point(tile, extent, point.x(), point.y());
-            Some((x, y, 0.0))
+        Geometry::Point(point) => Some((point.x(), point.y(), 0.0)),
+        Geometry::MultiPoint(points) => points.0.first().map(|point| (point.x(), point.y(), 0.0)),
+        Geometry::LineString(line) => line_label_anchor(line, line_placement),
+        Geometry::MultiLineString(lines) => {
+            longest_line(&lines.0).and_then(|line| line_label_anchor(line, line_placement))
         }
-        Geometry::MultiPoint(points) => points
-            .0
-            .first()
-            .map(|point| camera.tile_point(tile, extent, point.x(), point.y()))
-            .map(|(x, y)| (x, y, 0.0)),
-        Geometry::LineString(line) => line_label_anchor(camera, tile, extent, line, line_placement),
-        Geometry::MultiLineString(lines) => longest_line(&lines.0)
-            .and_then(|line| line_label_anchor(camera, tile, extent, line, line_placement)),
-        Geometry::Polygon(polygon) => {
-            polygon_anchor(camera, tile, extent, polygon).map(|(x, y)| (x, y, 0.0))
-        }
+        Geometry::Polygon(polygon) => polygon_anchor(polygon).map(|(x, y)| (x, y, 0.0)),
         Geometry::MultiPolygon(polygons) => largest_polygon(&polygons.0)
-            .and_then(|polygon| polygon_anchor(camera, tile, extent, polygon))
+            .and_then(polygon_anchor)
             .map(|(x, y)| (x, y, 0.0)),
         _ => None,
     }
 }
 
+/// The midpoint of `line` in extent units, plus the segment's angle when
+/// `rotate` asks for line-following text.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the normalized segment fraction is bounded to zero through one before MVT f32 interpolation"
 )]
-fn line_label_anchor(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    line: &LineString<f32>,
-    rotate: bool,
-) -> Option<(f64, f64, f64)> {
+fn line_label_anchor(line: &LineString<f32>, rotate: bool) -> Option<(f32, f32, f64)> {
     let points = &line.0;
     if points.len() < 2 {
-        return points
-            .first()
-            .map(|point| camera.tile_point(tile, extent, point.x, point.y))
-            .map(|(x, y)| (x, y, 0.0));
+        return points.first().map(|point| (point.x, point.y, 0.0));
     }
     let total = points
         .windows(2)
@@ -3832,16 +3940,14 @@ fn line_label_anchor(
         let length = segment_length(pair[0], pair[1]);
         if traversed + length >= target {
             let t = ((target - traversed) / length.max(f64::EPSILON)) as f32;
-            let anchor = camera.tile_point(
-                tile,
-                extent,
+            let anchor = (
                 (pair[1].x - pair[0].x).mul_add(t, pair[0].x),
                 (pair[1].y - pair[0].y).mul_add(t, pair[0].y),
             );
-            let start = camera.tile_point(tile, extent, pair[0].x, pair[0].y);
-            let end = camera.tile_point(tile, extent, pair[1].x, pair[1].y);
+            // The angle survives extent space unchanged: the projection to
+            // the screen is a uniform scale plus translation.
             let mut angle = if rotate {
-                (end.1 - start.1).atan2(end.0 - start.0)
+                f64::from(pair[1].y - pair[0].y).atan2(f64::from(pair[1].x - pair[0].x))
             } else {
                 0.0
             };
@@ -3857,16 +3963,12 @@ fn line_label_anchor(
     None
 }
 
+/// The polygon's centroid in extent units.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "MVT polygon coordinates are f32 and the centroid average remains in the same bounded tile extent"
 )]
-fn polygon_anchor(
-    camera: Camera,
-    tile: TileId,
-    extent: u32,
-    polygon: &Polygon<f32>,
-) -> Option<(f64, f64)> {
+fn polygon_anchor(polygon: &Polygon<f32>) -> Option<(f32, f32)> {
     let points = &polygon.exterior().0;
     if points.is_empty() {
         return None;
@@ -3877,7 +3979,7 @@ fn polygon_anchor(
     let count = f64::from(
         u32::try_from(points.len()).expect("an MVT polygon point count must fit into u32"),
     );
-    Some(camera.tile_point(tile, extent, (sum_x / count) as f32, (sum_y / count) as f32))
+    Some(((sum_x / count) as f32, (sum_y / count) as f32))
 }
 
 fn longest_line(lines: &[LineString<f32>]) -> Option<&LineString<f32>> {
@@ -3963,11 +4065,17 @@ mod chrome_tests {
 mod tests {
     use std::num::NonZeroU32;
 
+    use cherenkov::{FrameTime, Offscreen, OffscreenFormat, Surface};
+    use cherenkov_cpu::{Raster, RasterConfig};
+    use cherenkov_gpu::{Gpu, GpuConfig};
     use kurbo::{PathEl, Point};
     use num_traits::ToPrimitive as _;
-    use waterui_core::Environment;
-    use waterui_graphics::{GpuRuntime, OffscreenRenderConfig, OffscreenSize};
-    use waterui_map::{MapInteractivity, MapVisibility};
+    use waterui_core::view::ConfigurableView as _;
+    use waterui_graphics::{
+        OffscreenImage, OffscreenSize,
+        gpu::{GpuContentRenderer, GpuRuntime, RedrawHandle},
+    };
+    use waterui_map::Map;
     use waterui_url::Url;
 
     use super::*;
@@ -3981,30 +4089,49 @@ mod tests {
         )
     }
 
+    /// Tile pictures replay through `Camera::tile_transform`; it must land
+    /// tile-local points exactly where `tile_point` puts them on screen, for
+    /// the prepared camera and for a panned one alike.
     #[test]
-    fn cached_scene_transform_matches_live_camera_projection() {
+    fn tile_transform_matches_tile_point_projection() {
         let viewport = Viewport {
             width: 1_200,
             height: 800,
         };
-        let source = Camera::new(manhattan_region(0.030, 0.050), viewport, 0, 22);
-        let target_region = Region::new(
-            Coordinate::from_degrees(40.7680, -73.9655)
-                .expect("shifted Manhattan coordinate must be valid"),
-            0.015,
-            0.025,
-        );
-        let target = Camera::new(target_region, viewport, 0, 22);
-        let coordinate =
-            Coordinate::from_degrees(40.7484, -73.9857).expect("test coordinate must be valid");
-        let source_point = source.coordinate_point(coordinate);
-        let expected = target.coordinate_point(coordinate);
-        let transformed = camera_transform(source, target)
-            .expect("different cameras require a reprojection transform")
-            * Point::new(source_point.0, source_point.1);
+        let tile = TileId {
+            z: 14,
+            x: 4_824,
+            y: 6_160,
+        };
+        for region in [
+            manhattan_region(0.030, 0.050),
+            Region::new(
+                Coordinate::from_degrees(40.7680, -73.9655)
+                    .expect("shifted Manhattan coordinate must be valid"),
+                0.015,
+                0.025,
+            ),
+        ] {
+            let camera = Camera::new(region, viewport, 0, 22);
+            let transform = camera.tile_transform(tile);
+            for (x, y) in [(0.0_f64, 0.0_f64), (512.0, 384.5), (255.75, 511.9)] {
+                let extent = 4_096;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "tile-local test points are small exact fractions"
+                )]
+                let expected = camera.tile_point(
+                    tile,
+                    extent,
+                    (x * f64::from(extent) / f64::from(TILE_SIZE)) as f32,
+                    (y * f64::from(extent) / f64::from(TILE_SIZE)) as f32,
+                );
+                let transformed = transform * Point::new(x, y);
 
-        assert!((transformed.x - expected.0).abs() < 1e-6);
-        assert!((transformed.y - expected.1).abs() < 1e-6);
+                assert!((transformed.x - expected.0).abs() < 1e-4);
+                assert!((transformed.y - expected.1).abs() < 1e-4);
+            }
+        }
     }
 
     #[test]
@@ -4036,6 +4163,8 @@ mod tests {
         assert!((halfway.center.longitude.get() + 180.0).abs() < 1e-12);
     }
 
+    /// The outline must skip artificial edges: the vector-tile encoder's
+    /// seams on `0`/`extent` and the clip rectangle's own at `±pad`.
     #[test]
     fn fill_outlines_omit_vector_tile_clip_edges() {
         let camera = Camera::new(
@@ -4047,6 +4176,13 @@ mod tests {
             0,
             22,
         );
+        let tile = TileId {
+            z: 14,
+            x: 4_824,
+            y: 6_160,
+        };
+        let space = TileSpace::new(camera, tile, 100);
+        let pad = space.pad(1.5);
         let polygon = Polygon::new(
             LineString::from(vec![
                 (0.0, 10.0),
@@ -4057,17 +4193,8 @@ mod tests {
             ]),
             Vec::new(),
         );
-        let path = fill_outline_path(
-            camera,
-            TileId {
-                z: 14,
-                x: 4_824,
-                y: 6_160,
-            },
-            100,
-            &Geometry::Polygon(polygon),
-        )
-        .expect("non-clipped polygon edges must produce an outline");
+        let path = clipped_outline_path(&space, &Geometry::Polygon(polygon), pad)
+            .expect("non-boundary polygon edges must produce an outline");
 
         assert_eq!(path.elements().len(), 4);
         assert!(matches!(path.elements()[0], PathEl::MoveTo(_)));
@@ -4087,35 +4214,32 @@ mod tests {
             height: 500,
         };
         let mut surface_gesture = SurfaceCameraGesture::default();
-        let moving = GestureState {
-            pan_offset: waterui_core::layout::Point::new(100.0, 50.0),
-            active: true,
-            ..GestureState::new()
-        };
+        let moving = SurfaceGesture::pan(Point::new(100.0, 50.0), true);
 
         surface_gesture.apply(&controller, moving, viewport);
-        let visible = controller.region.get();
+        let visible = controller.region.snapshot();
         assert!((visible.center.latitude.get() - 40.761).abs() < 1e-9);
         assert!((visible.center.longitude.get() + 73.9905).abs() < 1e-9);
         assert_eq!(
-            controller.settled_region.get(),
+            controller.settled_region.snapshot(),
             manhattan_region(0.030, 0.050)
         );
 
         surface_gesture.apply(
             &controller,
-            GestureState {
-                active: false,
-                ..moving
-            },
+            SurfaceGesture::pan(Point::new(100.0, 50.0), false),
             viewport,
         );
-        assert_eq!(controller.region.get(), visible);
-        assert_eq!(controller.settled_region.get(), visible);
+        assert_eq!(controller.region.snapshot(), visible);
+        assert_eq!(controller.settled_region.snapshot(), visible);
 
-        surface_gesture.apply(&controller, GestureState::new(), viewport);
-        assert_eq!(controller.region.get(), visible);
-        assert_eq!(controller.settled_region.get(), visible);
+        surface_gesture.apply(
+            &controller,
+            SurfaceGesture::pan(Point::ZERO, false),
+            viewport,
+        );
+        assert_eq!(controller.region.snapshot(), visible);
+        assert_eq!(controller.settled_region.snapshot(), visible);
     }
 
     #[test]
@@ -4127,15 +4251,15 @@ mod tests {
             height: 500,
         };
         let mut surface_gesture = SurfaceCameraGesture::default();
-        let pinching = GestureState {
+        let pinching = SurfaceGesture {
             pinch_scale: 2.0,
-            pinch_center: Some(waterui_core::layout::Point::new(500.0, 250.0)),
+            pinch_center: Some(Point::new(500.0, 250.0)),
+            pan_offset: Point::ZERO,
             active: true,
-            ..GestureState::new()
         };
 
         surface_gesture.apply(&controller, pinching, viewport);
-        let visible = controller.region.get();
+        let visible = controller.region.snapshot();
         assert!((visible.latitude_delta - 0.015).abs() < 1e-9);
         assert!((visible.longitude_delta - 0.025).abs() < 1e-9);
         // The pinch focus sits at the viewport center, so the center holds.
@@ -4145,13 +4269,13 @@ mod tests {
 
         surface_gesture.apply(
             &controller,
-            GestureState {
+            SurfaceGesture {
                 active: false,
                 ..pinching
             },
             viewport,
         );
-        assert_eq!(controller.settled_region.get(), visible);
+        assert_eq!(controller.settled_region.snapshot(), visible);
     }
 
     #[test]
@@ -4161,19 +4285,14 @@ mod tests {
             width: 1_200,
             height: 800,
         };
-        let config = MapConfig {
-            region: Computed::constant(region),
-            annotations: Computed::constant(Vec::new()),
-            style: waterui_map::MapStyle::Standard,
-            user_location_visibility: MapVisibility::Hidden,
-            user_location: None,
-            interactivity: MapInteractivity::ReadOnly,
-            compass_visibility: MapVisibility::Hidden,
-            scale_visibility: MapVisibility::Hidden,
-            status: None,
-        };
+        let config = Map::new(region)
+            .style(waterui_map::MapStyle::Standard)
+            .is_interactive(false)
+            .shows_compass(false)
+            .shows_scale(false)
+            .config();
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut map = MapScene::new(config, options);
+        let mut map = MapScene::new(&config, options);
         {
             let mut state = map.state.borrow_mut();
             state.request = Some(RequestKey { region, viewport });
@@ -4210,33 +4329,26 @@ mod tests {
         let style = MapStyle {
             sources: BTreeMap::new(),
             layers: Vec::new(),
+            fingerprint: 0,
         };
         let prepared = PreparedMap {
-            chrome: MapChrome {
-                compass: MapVisibility::Hidden,
-                scale: MapVisibility::Hidden,
-            },
             style: style.clone(),
             camera: Camera::new(region, viewport, 0, 22),
             tiles: SourceTiles::default(),
-            annotations: Vec::new(),
-            location: None,
-            cached_base_scene: Some(SceneRecording::new()),
-            raster_tiles: Arc::new(Vec::new()),
+            painter: MapPainter::default(),
+            registrations: Registrations::default(),
+            label_registrations: Registrations::default(),
+            recorded: BTreeMap::new(),
+            cache: Rc::new(RefCell::new(TileCache::new(1_000_000))),
         };
-        let config = MapConfig {
-            region: Computed::constant(region),
-            annotations: Computed::constant(Vec::new()),
-            style: waterui_map::MapStyle::Standard,
-            user_location_visibility: MapVisibility::Hidden,
-            user_location: None,
-            interactivity: MapInteractivity::ReadOnly,
-            compass_visibility: MapVisibility::Hidden,
-            scale_visibility: MapVisibility::Hidden,
-            status: None,
-        };
+        let config = Map::new(region)
+            .style(waterui_map::MapStyle::Standard)
+            .is_interactive(false)
+            .shows_compass(false)
+            .shows_scale(false)
+            .config();
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut map = MapScene::new(config, options);
+        let mut map = MapScene::new(&config, options);
         {
             let mut state = map.state.borrow_mut();
             state.style = Some(style);
@@ -4303,73 +4415,301 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "requires network access, a real tile provider, and a GPU"]
-    fn cached_camera_pipeline_exports_manhattan() {
-        let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-        let width = 1_600;
-        let height = 1_200;
-        let region = manhattan_region(0.030, 0.050);
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
-            .expect("OpenFreeMap Manhattan scene must load");
-        let style = prepared.style.clone();
-        let config = MapConfig {
-            region: Computed::constant(region),
-            annotations: Computed::constant(Vec::new()),
-            style: waterui_map::MapStyle::Standard,
-            user_location_visibility: MapVisibility::Hidden,
-            user_location: None,
-            interactivity: MapInteractivity::ReadOnly,
-            compass_visibility: MapVisibility::Hidden,
-            scale_visibility: MapVisibility::Hidden,
-            status: None,
+    /// A fixture style exercising every layer kind the painter knows, in the
+    /// mixed order a real style uses: global and per-tile layers interleaved.
+    fn fixture_style() -> MapStyle {
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            String::from("basemap"),
+            TileSource {
+                kind: SourceKind::Vector,
+                templates: vec![String::from("https://tiles.example/{z}/{x}/{y}")],
+                min_zoom: 0,
+                max_zoom: 14,
+                tile_size: TILE_SIZE,
+                encoding: crate::style::DemEncoding::Mapbox,
+            },
+        );
+        let layer = |id: &str, kind: LayerKind, source_layer: &str| StyleLayer {
+            id: String::from(id),
+            kind,
+            source: Some(String::from("basemap")),
+            source_layer: Some(String::from(source_layer)),
+            min_zoom: f64::NEG_INFINITY,
+            max_zoom: f64::INFINITY,
+            filter: None,
+            properties: BTreeMap::new(),
+            visible: true,
         };
-        let map = MapScene::new(config, options);
+        let mut names = layer("names", LayerKind::Symbol, "place");
+        names.properties.insert(
+            String::from("text-field"),
+            maplibre_expr::Expr::Literal(maplibre_expr::Value::String(String::from("place"))),
+        );
+        MapStyle {
+            sources,
+            layers: vec![
+                layer("land", LayerKind::Fill, "landcover"),
+                layer("roads", LayerKind::Line, "transportation"),
+                layer("dots", LayerKind::Circle, "poi"),
+                names,
+            ],
+            fingerprint: 7,
+        }
+    }
+
+    /// A vector tile whose three source layers each carry `count` features
+    /// spread across its extent.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::suboptimal_flops,
+        reason = "fixture coordinates stay small and exact; plain arithmetic reads better"
+    )]
+    fn fixture_tile(id: TileId, count: usize) -> Arc<VectorTile> {
+        let features = |geometry: Geometry<f32>| TileFeature {
+            geometry,
+            style: maplibre_expr::Feature::default(),
+        };
+        let line = || {
+            MultiLineString::new(
+                (0..count)
+                    .map(|index| {
+                        let base = 100.0 + 300.0 * index as f32;
+                        LineString::from(vec![
+                            (base, 0.0),
+                            (base + 1_000.0, 2_000.0),
+                            (base + 2_000.0, 4_096.0),
+                        ])
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let polygon = Polygon::new(
+            LineString::from(vec![
+                (10.0, 10.0),
+                (2_000.0, 10.0),
+                (2_000.0, 2_000.0),
+                (10.0, 2_000.0),
+                (10.0, 10.0),
+            ]),
+            Vec::new(),
+        );
+        let mut layers = HashMap::new();
+        layers.insert(
+            String::from("landcover"),
+            crate::tile::TileLayer {
+                extent: 4_096,
+                features: vec![features(Geometry::MultiPolygon(MultiPolygon::new(vec![
+                    polygon,
+                ])))],
+            },
+        );
+        layers.insert(
+            String::from("transportation"),
+            crate::tile::TileLayer {
+                extent: 4_096,
+                features: vec![features(Geometry::MultiLineString(line()))],
+            },
+        );
+        layers.insert(
+            String::from("poi"),
+            crate::tile::TileLayer {
+                extent: 4_096,
+                features: vec![features(Geometry::MultiPoint(geo_types::MultiPoint::new(
+                    (0..count)
+                        .map(|index| {
+                            geo_types::Point::new(
+                                500.0 + index as f32 * 100.0,
+                                500.0 + index as f32 * 100.0,
+                            )
+                        })
+                        .collect(),
+                )))],
+            },
+        );
+        // `place` spans the whole tile extent so its bounding box overlaps
+        // whatever part of the tile is visible and each feature is shaped.
+        layers.insert(
+            String::from("place"),
+            crate::tile::TileLayer {
+                extent: 4_096,
+                features: (0..count)
+                    .map(|index| {
+                        let offset = index as f32 * 200.0;
+                        features(Geometry::LineString(LineString::from(vec![
+                            (0.0, offset),
+                            (4_096.0, offset + 4_096.0),
+                        ])))
+                    })
+                    .collect(),
+            },
+        );
+        Arc::new(VectorTile {
+            id,
+            layers,
+            byte_len: 1_024,
+        })
+    }
+
+    fn fixture_prepared(
+        source: &str,
+        region: Region,
+        style: &MapStyle,
+        tiles: Vec<Arc<VectorTile>>,
+        cache: &Rc<RefCell<TileCache>>,
+    ) -> PreparedMap {
+        let viewport = Viewport {
+            width: 800,
+            height: 600,
+        };
+        PreparedMap {
+            style: style.clone(),
+            camera: Camera::new(region, viewport, 0, 22),
+            tiles: SourceTiles {
+                vector: BTreeMap::from([(String::from(source), tiles)]),
+                raster: BTreeMap::new(),
+                dem: BTreeMap::new(),
+            },
+            painter: MapPainter::default(),
+            registrations: Registrations::default(),
+            label_registrations: Registrations::default(),
+            recorded: BTreeMap::new(),
+            cache: Rc::clone(cache),
+        }
+    }
+
+    /// A map scene showing `prepared`, whose camera `region` drives and whose
+    /// loads never start: the prepared map is already in place.
+    fn fixture_scene(
+        region: &Binding<Region>,
+        style: &MapStyle,
+        prepared: PreparedMap,
+        pixels: (u32, u32),
+    ) -> MapScene {
+        let config = Map::new(region.clone())
+            .style(waterui_map::MapStyle::Standard)
+            .is_interactive(false)
+            .shows_compass(false)
+            .shows_scale(false)
+            .config();
+        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let initial = region.snapshot();
+        let scene = MapScene::with_viewport_signal(
+            &config,
+            options,
+            binding(None),
+            Computed::constant(initial),
+            Computed::constant(false),
+        );
         {
-            let mut state = map.state.borrow_mut();
-            state.style = Some(style);
+            let mut state = scene.state.borrow_mut();
+            state.style = Some(style.clone());
             state.prepared = Some(prepared);
             state.prepared_generation = Some(1);
             state.request = Some(RequestKey {
-                region,
-                viewport: Viewport { width, height },
+                region: initial,
+                viewport: Viewport {
+                    width: pixels.0,
+                    height: pixels.1,
+                },
             });
         }
-
-        let runtime =
-            pollster::block_on(GpuRuntime::new()).expect("cached map visual requires a GPU");
-        let size =
-            OffscreenSize::try_from_pixels(width, height).expect("visual size must be non-zero");
-        let mut env = Environment::new();
-        let output = pollster::block_on(
-            GpuSurface::new(MapGpuRenderer::new_preloaded(map)).render_offscreen_frames(
-                &runtime,
-                OffscreenRenderConfig::new(size),
-                &mut env,
-                NonZeroU32::MIN,
-            ),
-        )
-        .expect("cached map camera pipeline must render");
-        let output_path = std::path::Path::new("/tmp/waterui_map_gpu/cached_camera.png");
-        std::fs::create_dir_all(
-            output_path
-                .parent()
-                .expect("cached map output must have a parent"),
-        )
-        .expect("cached map output directory must be created");
-        output
-            .save_png(output_path)
-            .expect("cached map output must be saved");
+        scene
     }
 
-    fn synthetic_raster_job(
-        resources: RasterResources,
-        live_epoch: &Arc<AtomicU64>,
-        tile_count: u32,
-    ) -> RasterJob {
+    /// A map retained on an offscreen surface of `engine`.
+    struct Harness<B: Backend + Uploads<Rgba8>> {
+        engine: Engine<B>,
+        retained: Retained<B>,
+        scene: MapScene,
+        region: Binding<Region>,
+        cache: Rc<RefCell<TileCache>>,
+        pixels: (u32, u32),
+        /// The style source the tiles belong to.
+        source: &'static str,
+    }
+
+    impl<B: Backend + Uploads<Rgba8>> Harness<B> {
+        fn new(
+            engine: Engine<B>,
+            style: &MapStyle,
+            source: &'static str,
+            tiles: Vec<Arc<VectorTile>>,
+            region: Region,
+        ) -> Self {
+            let pixels = (800, 600);
+            let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
+            let live = binding(region);
+            let prepared = fixture_prepared(source, region, style, tiles, &cache);
+            let scene = fixture_scene(&live, style, prepared, pixels);
+            let surface: Surface<B> = engine
+                .surface(Offscreen::new(pixels, OffscreenFormat::LinearF16), || {})
+                .expect("an offscreen surface must open");
+            surface
+                .display(cherenkov::Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                })
+                .expect("the surface must accept its display scale");
+            Self {
+                engine,
+                retained: Retained::new(surface),
+                scene,
+                region: live,
+                cache,
+                pixels,
+                source,
+            }
+        }
+
+        /// One frame: brings the recording up to date and renders it.
+        fn frame(&mut self) -> bool {
+            let animating = self
+                .retained
+                .update(&self.engine, &mut self.scene, self.pixels, 1.0);
+            self.engine
+                .render(FrameTime::now())
+                .expect("the frame must render");
+            animating
+        }
+
+        /// The last rendered frame.
+        fn image(&self) -> OffscreenImage {
+            OffscreenImage::from_readback(
+                &self
+                    .retained
+                    .surface()
+                    .readback()
+                    .expect("the surface must read back"),
+            )
+        }
+
+        /// Replaces the prepared map, as a settled load does.
+        fn prepare(&self, tiles: Vec<Arc<VectorTile>>, region: Region, generation: u64) {
+            let style = self.scene.state.borrow().style.clone().expect("a style");
+            let mut state = self.scene.state.borrow_mut();
+            state.prepared = Some(fixture_prepared(
+                self.source,
+                region,
+                &style,
+                tiles,
+                &self.cache,
+            ));
+            state.prepared_generation = Some(generation);
+        }
+    }
+
+    fn cpu_harness(tiles: Vec<Arc<VectorTile>>, region: Region) -> Harness<Raster> {
+        let engine = Engine::<Raster>::new(RasterConfig::default()).expect("a CPU engine");
+        Harness::new(engine, &fixture_style(), "basemap", tiles, region)
+    }
+
+    /// The synthetic city of [`crate::visual_fixture`] around `region`, on the
+    /// GPU backend.
+    fn city_harness(region: Region) -> Harness<Gpu> {
+        let engine = Engine::<Gpu>::new(GpuConfig::default()).expect("a GPU engine");
         let camera = Camera::new(
-            manhattan_region(0.030, 0.050),
+            region,
             Viewport {
                 width: 800,
                 height: 600,
@@ -4377,455 +4717,379 @@ mod tests {
             0,
             22,
         );
-        RasterJob {
-            signature: RasterSignature {
-                generation: 1,
-                viewport: camera.viewport,
-                annotations: Vec::new(),
-                location: None,
-            },
-            epoch: live_epoch.load(Ordering::Relaxed),
-            live_epoch: Arc::clone(live_epoch),
-            camera,
-            base_tiles: Arc::new(
-                (0..tile_count)
-                    .map(|index| {
-                        let mut scene = vello::Scene::new();
-                        scene.fill(
-                            Fill::NonZero,
-                            Affine::IDENTITY,
-                            Color::new([0.2, 0.4, 0.8, 1.0]),
-                            None,
-                            &Rect::new(0.0, 0.0, f64::from(index).mul_add(32.0, 64.0), 256.0),
-                        );
-                        PreparedRasterTile {
-                            scene,
-                            layout: RasterTileLayout {
-                                origin: (index * 256, 0),
-                                texture_size: (256, 256),
-                                scene_origin: (0.0, 0.0),
-                            },
-                        }
-                    })
-                    .collect(),
+        let tiles = camera
+            .visible_tiles(f64::from(TILE_OVERSCAN_PIXELS), 0, 14, TILE_SIZE)
+            .into_iter()
+            .map(crate::visual_fixture::tile)
+            .collect();
+        Harness::new(
+            engine,
+            &crate::visual_fixture::style(),
+            "city",
+            tiles,
+            region,
+        )
+    }
+
+    /// Panning to a partly overlapping tile set must record only the tiles
+    /// that were not already recorded — the whole point of per-tile
+    /// pictures. Tile pictures live in the shared cache, so a second
+    /// `PreparedMap` (what a settled pan produces) pays only for its new
+    /// tiles.
+    #[test]
+    fn panning_records_only_newly_visible_tiles() {
+        let tiles_a = vec![
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 100,
+                    y: 100,
+                },
+                3,
             ),
-            resources,
-            renderers: Vec::new(),
-            next_tile: 0,
-            started_at: Instant::now(),
-            total_paths: 0,
-            total_segments: 0,
-        }
-    }
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 101,
+                    y: 100,
+                },
+                3,
+            ),
+        ];
+        let mut harness = cpu_harness(tiles_a, manhattan_region(0.030, 0.050));
+        harness.frame();
+        // 2 tiles × 3 recorded layer kinds (fill, line, circle); symbols
+        // shape into the label cache, never the picture cache.
+        assert_eq!(harness.cache.borrow().pictures.recordings, 6);
+        let after_first = harness.cache.borrow().pictures.recordings;
 
-    /// Tiles must reach the channel one at a time and completion must arrive
-    /// only after the last one — the streaming contract that lets a map
-    /// survive device-loss windows shorter than a whole raster job.
-    #[test]
-    fn raster_job_streams_each_tile_before_finishing() {
-        let runtime =
-            pollster::block_on(GpuRuntime::new()).expect("raster streaming test requires a GPU");
-        let context = runtime.context();
-        let resources =
-            create_raster_resources(&context.device, &context.queue, context.device_loss());
-        let live_epoch = Arc::new(AtomicU64::new(0));
-        let job = synthetic_raster_job(resources, &live_epoch, 3);
-        let (sender, receiver) = mpsc::channel();
+        harness.frame();
+        assert_eq!(
+            harness.cache.borrow().pictures.recordings,
+            after_first,
+            "a repaint at the same camera records nothing"
+        );
 
-        drive_raster_job(job, &sender, true, &|| {});
-
-        let mut tiles = 0;
-        let mut finished = false;
-        for progress in receiver.try_iter() {
-            match progress.kind {
-                RasterProgressKind::Tile(..) => tiles += 1,
-                RasterProgressKind::Finished { .. } => finished = true,
-                RasterProgressKind::Failed => {
-                    panic!("raster job must not fail (epoch {})", progress.epoch)
-                }
-            }
-        }
-        assert_eq!(tiles, 3, "every tile must stream individually");
-        assert!(
-            finished,
-            "the job must report completion after the last tile"
+        // A pan that keeps tile z=14,x=101 visible and reveals z=14,x=102.
+        let tiles_b = vec![
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 101,
+                    y: 100,
+                },
+                3,
+            ),
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 102,
+                    y: 100,
+                },
+                3,
+            ),
+        ];
+        harness.prepare(tiles_b, manhattan_region(0.040, 0.060), 2);
+        harness.frame();
+        assert_eq!(
+            harness.cache.borrow().pictures.recordings - after_first,
+            3,
+            "only the new tile's three layer pictures may record"
         );
     }
 
-    /// A device loss bumps the epoch mid-job; the driver must stop stepping
-    /// tiles and never report completion, so the rebuild can start fresh.
+    /// A repaint under a camera moved within the same tiles must only
+    /// project the cached anchors and re-run collision placement: no feature
+    /// is evaluated or shaped twice.
     #[test]
-    fn raster_job_aborts_when_the_device_epoch_advances() {
-        let runtime =
-            pollster::block_on(GpuRuntime::new()).expect("raster abort test requires a GPU");
-        let context = runtime.context();
-        let resources =
-            create_raster_resources(&context.device, &context.queue, context.device_loss());
-        let live_epoch = Arc::new(AtomicU64::new(0));
-        let job = synthetic_raster_job(resources, &live_epoch, 3);
-        let (sender, receiver) = mpsc::channel();
-
-        let kill_device = {
-            let live_epoch = Arc::clone(&live_epoch);
-            move || {
-                live_epoch.fetch_add(1, Ordering::Relaxed);
-            }
-        };
-        drive_raster_job(job, &sender, true, &kill_device);
-
-        let mut progress = receiver.try_iter().map(|progress| progress.kind);
-        assert!(matches!(
-            progress.next(),
-            Some(RasterProgressKind::Tile(..))
-        ));
-        assert!(
-            progress.next().is_none(),
-            "no completion may follow a lost device"
-        );
-    }
-
-    /// A step taken after `setup` rebuilt the context must not run any wgpu
-    /// call at all: on a lost device `create_texture` silently returns an
-    /// invalid handle and the next `create_view` raises a fatal validation
-    /// error, so the job stops before producing a tile.
-    #[test]
-    fn raster_step_never_touches_a_lost_device() {
-        let runtime =
-            pollster::block_on(GpuRuntime::new()).expect("raster step test requires a GPU");
-        let context = runtime.context();
-        let resources =
-            create_raster_resources(&context.device, &context.queue, context.device_loss());
-        let live_epoch = Arc::new(AtomicU64::new(0));
-        let mut job = synthetic_raster_job(resources, &live_epoch, 1);
-        let (sender, receiver) = mpsc::channel();
-
-        // The rebuild bumped the epoch before the job's next step.
-        live_epoch.fetch_add(1, Ordering::Relaxed);
-
-        assert!(
-            !step_raster_tile(&mut job, &sender),
-            "a job on a dead device must not rasterize"
-        );
-        assert_eq!(job.next_tile, 0, "no tile may be consumed");
-        assert!(
-            receiver.try_recv().is_err(),
-            "no tile may be produced on a dead device"
-        );
-    }
-
-    /// The driver's lost callback reaches the worker through the handle it
-    /// took at setup, before any frame has rebuilt the context and bumped
-    /// the epoch: the job stops without touching the device.
-    #[test]
-    fn raster_step_stops_once_the_driver_reports_the_device_lost() {
-        let runtime =
-            pollster::block_on(GpuRuntime::new()).expect("raster step test requires a GPU");
-        let context = runtime.context();
-        let resources =
-            create_raster_resources(&context.device, &context.queue, context.device_loss());
-        let live_epoch = Arc::new(AtomicU64::new(0));
-        let mut job = synthetic_raster_job(resources, &live_epoch, 1);
-        let (sender, receiver) = mpsc::channel();
-
-        // The driver reported the loss; no frame has run since, so the epoch
-        // still matches.
-        context.mark_device_lost_for_testing("simulated device loss");
-        assert_eq!(job.live_epoch.load(Ordering::Relaxed), job.epoch);
-
-        assert!(
-            !step_raster_tile(&mut job, &sender),
-            "a job on a lost device must not rasterize"
-        );
-        assert_eq!(job.next_tile, 0, "no tile may be consumed");
-        assert!(
-            receiver.try_recv().is_err(),
-            "no tile may be produced on a lost device"
-        );
-    }
-
-    /// Streamed tiles accumulate into the cached texture under the pending
-    /// signature, and results stamped with a dead device's epoch are dropped.
-    #[test]
-    fn streamed_tiles_accumulate_into_the_cached_map_texture() {
-        let runtime =
-            pollster::block_on(GpuRuntime::new()).expect("raster install test requires a GPU");
-        let context = runtime.context();
+    fn repainting_within_tiles_does_not_reshape_labels() {
         let region = manhattan_region(0.030, 0.050);
-        let config = MapConfig {
-            region: Computed::constant(region),
-            annotations: Computed::constant(Vec::new()),
-            style: waterui_map::MapStyle::Standard,
-            user_location_visibility: MapVisibility::Hidden,
-            user_location: None,
-            interactivity: MapInteractivity::ReadOnly,
-            compass_visibility: MapVisibility::Hidden,
-            scale_visibility: MapVisibility::Hidden,
-            status: None,
-        };
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut renderer = MapGpuRenderer::new(MapScene::new(config, options), None);
-
-        let live_epoch = Arc::new(AtomicU64::new(0));
-        let job = synthetic_raster_job(
-            create_raster_resources(&context.device, &context.queue, context.device_loss()),
-            &live_epoch,
-            3,
-        );
-        let signature = job.signature.clone();
-        let (sender, receiver) = mpsc::channel();
-        drive_raster_job(job, &sender, true, &|| {});
-
-        renderer.pending_raster_signature = Some(signature.clone());
-        for progress in receiver.try_iter() {
-            renderer.install_raster_progress(progress);
-        }
-        assert_eq!(renderer.raster_signature, Some(signature));
-        assert_eq!(
-            renderer
-                .cached_texture
-                .as_ref()
-                .expect("streamed tiles must accumulate into the cached texture")
-                .tiles
-                .len(),
-            3
-        );
-        assert!(renderer.pending_raster_signature.is_none());
-        assert_eq!(
-            renderer.raster_renderers.len(),
-            3,
-            "each tile's Vello renderer must return to the pool"
-        );
-
-        // Results stamped with a lost device's epoch must not touch the cache.
-        let stale_epoch = Arc::new(AtomicU64::new(9));
-        let stale_job = synthetic_raster_job(
-            create_raster_resources(&context.device, &context.queue, context.device_loss()),
-            &stale_epoch,
-            1,
-        );
-        drive_raster_job(stale_job, &sender, true, &|| {});
-        renderer.pending_raster_signature = Some(RasterSignature {
-            generation: 2,
-            viewport: Viewport {
+        let camera = Camera::new(
+            region,
+            Viewport {
                 width: 800,
                 height: 600,
             },
-            annotations: Vec::new(),
-            location: None,
-        });
-        for progress in receiver.try_iter() {
-            renderer.install_raster_progress(progress);
-        }
-        assert_eq!(
-            renderer
-                .cached_texture
-                .as_ref()
-                .expect("the live raster must survive stale results")
-                .tiles
-                .len(),
-            3
+            0,
+            22,
         );
-    }
-
-    /// The same streaming driver against a real GL device — the backend whose
-    /// thread-bound adapter takes the `render`-thread path in production.
-    /// Skips where the platform ships no headless GL: wgpu compiles no `gles`
-    /// support on Apple targets, while Linux CI runs this against Mesa's
-    /// software rasterizer over EGL. The skip is logged so a probing failure
-    /// on CI cannot read as a pass.
-    #[test]
-    fn raster_job_streams_tiles_on_a_gl_device() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::GL,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = match pollster::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-        ) {
-            Ok(adapter) => adapter,
-            Err(error) => {
-                tracing::warn!(%error, "no headless GL adapter on this platform; skipping");
-                return;
-            }
-        };
-        assert_eq!(
-            adapter.get_info().backend,
-            wgpu::Backend::Gl,
-            "a GL-requested adapter must be GL"
-        );
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("the GL adapter must provide a device");
-
-        let resources = create_raster_resources(&device, &queue, DeviceLoss::default());
-        let live_epoch = Arc::new(AtomicU64::new(0));
-        let job = synthetic_raster_job(resources.clone(), &live_epoch, 3);
-        let (sender, receiver) = mpsc::channel();
-
-        drive_raster_job(job, &sender, true, &|| {});
-
-        let mut tiles = 0;
-        let mut finished = false;
-        for progress in receiver.try_iter() {
-            match progress.kind {
-                RasterProgressKind::Tile(..) => tiles += 1,
-                RasterProgressKind::Finished { .. } => finished = true,
-                RasterProgressKind::Failed => {
-                    panic!("raster job must not fail (epoch {})", progress.epoch)
-                }
-            }
-        }
-        assert_eq!(tiles, 3, "every tile must stream individually");
+        let tile_id = camera.visible_tiles(0.0, 0, 22, TILE_SIZE)[0];
+        let tiles = vec![fixture_tile(tile_id, 3)];
+        let mut harness = cpu_harness(tiles, region);
+        harness.frame();
+        let recordings = harness.cache.borrow().labels.recordings;
         assert!(
-            finished,
-            "the job must report completion after the last tile"
+            recordings > 0,
+            "the first frame shapes each visible symbol feature once"
         );
 
-        // The production GL path steps a queued job one tile per `render`
-        // call on the render thread — drive it through the same method.
-        let region = manhattan_region(0.030, 0.050);
-        let config = MapConfig {
-            region: Computed::constant(region),
-            annotations: Computed::constant(Vec::new()),
-            style: waterui_map::MapStyle::Standard,
-            user_location_visibility: MapVisibility::Hidden,
-            user_location: None,
-            interactivity: MapInteractivity::ReadOnly,
-            compass_visibility: MapVisibility::Hidden,
-            scale_visibility: MapVisibility::Hidden,
-            status: None,
-        };
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut renderer = MapGpuRenderer::new(MapScene::new(config, options), None);
-        let job = synthetic_raster_job(resources, &renderer.raster_epoch, 3);
-        let signature = job.signature.clone();
-        renderer.pending_raster_signature = Some(signature.clone());
-        renderer.pending_raster_job = Some(job);
-
-        // One tile installs per stepped frame, before the whole job finishes.
-        assert!(renderer.step_pending_raster_job());
+        harness.region.set(manhattan_region(0.031, 0.051));
+        harness.frame();
         assert_eq!(
-            renderer
-                .cached_texture
-                .as_ref()
-                .expect("a stepped tile installs immediately")
-                .tiles
-                .len(),
-            1
-        );
-        let mut steps = 1;
-        while renderer.step_pending_raster_job() {
-            steps += 1;
-            assert!(steps <= 6, "a three-tile job must terminate");
-        }
-        assert_eq!(renderer.raster_signature, Some(signature));
-        assert_eq!(
-            renderer
-                .cached_texture
-                .as_ref()
-                .expect("the completed raster must install")
-                .tiles
-                .len(),
-            3
-        );
-        assert!(renderer.pending_raster_job.is_none());
-        assert!(renderer.pending_raster_signature.is_none());
-        assert_eq!(
-            renderer.raster_renderers.len(),
-            3,
-            "each tile's Vello renderer must return to the pool"
+            harness.cache.borrow().labels.recordings,
+            recordings,
+            "a repaint within the same tiles projects cached labels and shapes nothing"
         );
     }
 
-    /// A stepped job that dies mid-frame must still request the next frame —
-    /// otherwise a non-animating map sits with a cleared pending signature and
-    /// never reschedules the raster.
+    /// A camera move is state of the retained recording: the tiles follow the
+    /// camera signal in place, so the surface is neither recorded whole again
+    /// nor does any tile picture record again.
     #[test]
-    fn a_failed_render_thread_raster_step_requests_the_next_frame() {
-        let runtime = pollster::block_on(GpuRuntime::new())
-            .expect("render-thread raster test requires a GPU");
-        let context = runtime.context();
+    fn a_camera_move_follows_in_place() {
         let region = manhattan_region(0.030, 0.050);
-        let viewport = Viewport {
-            width: 800,
-            height: 600,
-        };
-        let config = MapConfig {
-            region: Computed::constant(region),
-            annotations: Computed::constant(Vec::new()),
-            style: waterui_map::MapStyle::Standard,
-            user_location_visibility: MapVisibility::Hidden,
-            user_location: None,
-            interactivity: MapInteractivity::ReadOnly,
-            compass_visibility: MapVisibility::Hidden,
-            scale_visibility: MapVisibility::Hidden,
-            status: None,
-        };
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut renderer = MapGpuRenderer::new(MapScene::new(config, options), None);
-        renderer.redraw_handle = Some(waterui_graphics::RedrawHandle::new());
-        renderer.gpu_calls_thread_bound = true;
-        renderer.raster_resources = Some(create_raster_resources(
-            &context.device,
-            &context.queue,
-            context.device_loss(),
-        ));
-        {
-            let mut state = renderer.map.state.borrow_mut();
-            state.prepared = Some(PreparedMap {
-                chrome: MapChrome {
-                    compass: MapVisibility::Hidden,
-                    scale: MapVisibility::Hidden,
-                },
-                style: MapStyle {
-                    sources: BTreeMap::new(),
-                    layers: Vec::new(),
-                },
-                camera: Camera::new(region, viewport, 0, 22),
-                tiles: SourceTiles::default(),
-                annotations: Vec::new(),
-                location: None,
-                cached_base_scene: Some(SceneRecording::new()),
-                raster_tiles: Arc::new(Vec::new()),
-            });
-        }
-
-        // A tile whose texture exceeds the device limit panics inside the
-        // step — the same failure a raster task surfaces as `Failed`.
-        let limit = context.device.limits().max_texture_dimension_2d;
-        let mut job = synthetic_raster_job(
-            create_raster_resources(&context.device, &context.queue, context.device_loss()),
-            &renderer.raster_epoch,
-            1,
-        );
-        job.base_tiles = Arc::new(vec![PreparedRasterTile {
-            scene: vello::Scene::new(),
-            layout: RasterTileLayout {
-                origin: (0, 0),
-                texture_size: (limit + 1, limit + 1),
-                scene_origin: (0.0, 0.0),
+        let camera = Camera::new(
+            region,
+            Viewport {
+                width: 800,
+                height: 600,
             },
-        }]);
-        let signature = job.signature.clone();
-        renderer.pending_raster_signature = Some(signature.clone());
-        renderer.pending_raster_job = Some(job);
-
-        // The failed step reports a needed frame even though it terminated
-        // the job; render() turns that into a redraw request.
-        assert!(renderer.step_pending_raster_job());
-        assert!(renderer.pending_raster_job.is_none());
-        assert!(renderer.pending_raster_signature.is_none());
-        assert!(renderer.cached_texture.is_none());
-
-        // The next render() then reschedules the job without any external
-        // redraw, and the retried job installs its texture.
-        renderer.schedule_raster_job(Some(signature.clone()));
-        assert!(
-            renderer.pending_raster_job.is_some(),
-            "the render-thread path must re-queue the failed job"
+            0,
+            22,
         );
-        assert!(renderer.step_pending_raster_job());
-        assert!(!renderer.step_pending_raster_job());
-        assert_eq!(renderer.raster_signature, Some(signature));
+        let tile_id = camera.visible_tiles(0.0, 0, 22, TILE_SIZE)[0];
+        let mut harness = cpu_harness(vec![fixture_tile(tile_id, 3)], region);
+        harness.frame();
+        assert_eq!(harness.retained.installs, 1);
+        let pictures = harness.cache.borrow().pictures.recordings;
+
+        let panned = Region::new(
+            Coordinate::from_degrees(40.7620, -73.9800).expect("valid coordinate"),
+            0.030,
+            0.050,
+        );
+        harness.region.set(panned);
+        harness.frame();
+
+        assert_eq!(
+            harness.retained.installs, 1,
+            "a pan must not record the surface whole again"
+        );
+        assert_eq!(
+            harness.cache.borrow().pictures.recordings,
+            pictures,
+            "a pan must not record a tile again"
+        );
+        let (_, drawn) = harness.retained.installed.as_ref().expect("installed");
+        assert_eq!(
+            drawn.as_ref().expect("drawn").camera.snapshot().region,
+            panned,
+            "the recording's camera is the live one"
+        );
+    }
+
+    /// The map renders the synthetic city before and after a pan and a zoom,
+    /// each a camera move on the one retained recording. The PNGs go to
+    /// `<temp dir>/waterui_map_gpu/` for review.
+    #[test]
+    fn retained_map_exports_camera_moves() {
+        let out = std::env::temp_dir().join("waterui_map_gpu");
+        std::fs::create_dir_all(&out).expect("the output directory must be created");
+        let region = manhattan_region(0.030, 0.050);
+        let mut harness = city_harness(region);
+        harness.frame();
+        harness
+            .image()
+            .save_png(out.join("after_initial.png"))
+            .expect("the initial frame must be saved");
+        let panned = Region::new(
+            Coordinate::from_degrees(40.7580 + 0.004, -73.9855 + 0.009).expect("valid"),
+            0.030,
+            0.050,
+        );
+        harness.region.set(panned);
+        harness.frame();
+        harness
+            .image()
+            .save_png(out.join("after_panned.png"))
+            .expect("the panned frame must be saved");
+        harness
+            .region
+            .set(Region::new(panned.center, 0.020, 0.0333));
+        harness.frame();
+        harness
+            .image()
+            .save_png(out.join("after_zoomed.png"))
+            .expect("the zoomed frame must be saved");
+        assert_eq!(
+            harness.retained.installs, 1,
+            "pan and zoom follow the camera without recording the surface again"
+        );
+    }
+
+    /// The glue: a host frame runs the UI half, which renders the surface,
+    /// and the content presents it into the host's texture.
+    #[test]
+    fn the_host_presents_the_retained_surface() {
+        use waterui_graphics::gpu::wgpu;
+
+        let runtime = pollster::block_on(GpuRuntime::new()).expect("a GPU runtime");
+        let region = manhattan_region(0.030, 0.050);
+        let tile_id = Camera::new(
+            region,
+            Viewport {
+                width: 64,
+                height: 64,
+            },
+            0,
+            22,
+        )
+        .visible_tiles(0.0, 0, 22, TILE_SIZE)[0];
+        let cache = Rc::new(RefCell::new(TileCache::new(64 * 1024 * 1024)));
+        let style = fixture_style();
+        let prepared = fixture_prepared(
+            "basemap",
+            region,
+            &style,
+            vec![fixture_tile(tile_id, 3)],
+            &cache,
+        );
+        let scene = fixture_scene(&binding(region), &style, prepared, (64, 64));
+        let shared = scene.shared();
+        let mut view = host::view(scene);
+        let size = OffscreenSize::try_from_pixels(64, 64).expect("non-zero size");
+        let mut renderer = GpuContentRenderer::new(
+            &runtime,
+            runtime.context(),
+            view.take_engine_content(),
+            size,
+            RedrawHandle::new(|| {}),
+        )
+        .expect("the content renderer must open");
+        let context = runtime.context();
+        let target = context.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("host target"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let display = cherenkov::Display {
+            scale: 1.0,
+            headroom: 1.0,
+        };
+        // The first frame sets the content up and tells the UI half the
+        // extent; the next ones render the surface it presents.
+        for _ in 0..3 {
+            view.frame();
+            renderer
+                .present(&target, display, FrameTime::now())
+                .expect("the host frame must present");
+        }
+        assert_eq!(shared.rendered_pixels(), Some((64, 64)));
+    }
+
+    /// No batched path may outgrow a single tile's content: batching stops
+    /// at the tile boundary, so the largest path a frame produces is bounded
+    /// by the densest tile, not by the viewport.
+    #[test]
+    fn the_largest_path_is_bounded_by_one_tile() {
+        // Two tiles with deliberately different content sizes, so a merged
+        // batch would be far larger than either tile's own.
+        let tiles = vec![
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 100,
+                    y: 100,
+                },
+                8,
+            ),
+            fixture_tile(
+                TileId {
+                    z: 14,
+                    x: 101,
+                    y: 100,
+                },
+                2,
+            ),
+        ];
+        let mut harness = cpu_harness(tiles, manhattan_region(0.030, 0.050));
+        harness.frame();
+
+        let cache = harness.cache.borrow();
+        let largest = cache
+            .pictures
+            .entries
+            .iter()
+            .map(|(_, entry)| entry.value.max_path_elements)
+            .max()
+            .expect("the fixture records batched layers");
+        // One clipped triangle line string is move+2×line elements; the
+        // densest tile holds eight of them plus the circle discs it batches
+        // with, and no picture may merge across tiles.
+        let one_tile_bound = 8 * 3;
+        assert!(
+            largest <= one_tile_bound,
+            "largest path {largest} exceeds one tile's content {one_tile_bound}"
+        );
+    }
+
+    /// `prepared` drawn once on `engine` at `pixels`.
+    fn render_prepared<B: Backend + Uploads<Rgba8>>(
+        engine: &Engine<B>,
+        prepared: PreparedMap,
+        region: Region,
+        pixels: (u32, u32),
+    ) -> OffscreenImage {
+        let style = prepared.style.clone();
+        let mut scene = fixture_scene(&binding(region), &style, prepared, pixels);
+        let surface: Surface<B> = engine
+            .surface(Offscreen::new(pixels, OffscreenFormat::LinearF16), || {})
+            .expect("an offscreen surface must open");
+        surface
+            .display(cherenkov::Display {
+                scale: 1.0,
+                headroom: 1.0,
+            })
+            .expect("the surface must accept its display scale");
+        let mut retained = Retained::new(surface);
+        retained.update(engine, &mut scene, pixels, 1.0);
+        engine
+            .render(FrameTime::now())
+            .expect("the frame must render");
+        OffscreenImage::from_readback(
+            &retained
+                .surface()
+                .readback()
+                .expect("the surface must read back"),
+        )
+    }
+
+    /// The loaded Manhattan map renders on the CPU and the GPU backend from
+    /// the same recording. The PNGs go to `/tmp/waterui_map_gpu/`.
+    #[test]
+    #[ignore = "requires network access and a real tile provider"]
+    fn cached_camera_pipeline_exports_manhattan() {
+        let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+        let (width, height) = (1_600, 1_200);
+        let region = manhattan_region(0.030, 0.050);
+        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let output_dir = std::path::Path::new("/tmp/waterui_map_gpu");
+        std::fs::create_dir_all(output_dir).expect("cached map output directory must be created");
+
+        let prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
+            .expect("OpenFreeMap Manhattan scene must load");
+        let cpu = Engine::<Raster>::new(RasterConfig::default()).expect("a CPU engine");
+        render_prepared(&cpu, prepared, region, (width, height))
+            .save_png(output_dir.join("cached_camera_cpu.png"))
+            .expect("cached map CPU output must be saved");
+
+        let prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
+            .expect("OpenFreeMap Manhattan scene must load");
+        let gpu = Engine::<Gpu>::new(GpuConfig::default()).expect("a GPU engine");
+        render_prepared(&gpu, prepared, region, (width, height))
+            .save_png(output_dir.join("cached_camera.png"))
+            .expect("cached map GPU output must be saved");
     }
 }

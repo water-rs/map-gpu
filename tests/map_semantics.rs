@@ -3,6 +3,8 @@
 //! Received from `components/data/map/tests/e2e_semantics.rs` in
 //! water-rs/waterui, where it lived as a `waterui-map` dev-dependency on this
 //! crate; here it exercises `waterui-map-gpu` directly.
+//!
+//! It mounts through `waterui-testing` on the pinned Hydrolysis host.
 
 use std::time::Duration;
 

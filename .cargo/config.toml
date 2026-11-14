@@ -1,0 +1,5 @@
+[env]
+# cherenkov-gpu's build script enforces the engine's native Apple contract:
+# it compiles against OS 26 APIs and rejects a lower deployment target.
+MACOSX_DEPLOYMENT_TARGET = "26.0"
+IPHONEOS_DEPLOYMENT_TARGET = "26.0"

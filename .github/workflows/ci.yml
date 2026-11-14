@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
     branches: ["**"]
 
@@ -20,8 +20,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  bump:
+    # release-plz bump pull requests (`release-plz-*` heads) change only
+    # versions and the changelog, so this job skips itself and every other
+    # job skips through `needs: bump`.
+    name: Not a release bump
+    if: ${{ !startsWith(github.head_ref, 'release-plz-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME} is not a release bump"
+
   test:
     name: Test / ${{ matrix.os }}
+    needs: bump
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -37,12 +48,56 @@ jobs:
       - name: Install DirectX Shader Compiler
         if: runner.os == 'Windows'
         uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      - name: Install SPIRV-Tools
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-spirv-tools
+      - name: Put SPIRV-Tools on the PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
       - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+      # Hydrolysis's styled tests resolve their font families through
+      # system font discovery; the fonts are built from pinned,
+      # hash-verified sources by the install script of the pinned waterui.
+      - name: Locate the Hydrolysis test-font script
+        id: test-fonts
+        shell: bash
+        run: |
+          set -euo pipefail
+          script="$(cargo metadata --format-version 1 --locked | jq -er '.packages[] | select(.name == "hydrolysis") | .manifest_path | sub("Cargo.toml$"; "test-fonts/install.py")')"
+          {
+            echo "script=$script"
+            echo "dir=$(dirname "$script")"
+            echo "hash=$(uv run --no-project python -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$script")"
+          } >> "$GITHUB_OUTPUT"
+      # The script builds its fonts beside itself and reuses every face it
+      # finds there after checking it against its pinned digest, so a
+      # restored entry downloads nothing. The script's hash covers every
+      # source pin and expected digest.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.test-fonts.outputs.dir }}/*.ttf
+            ${{ steps.test-fonts.outputs.dir }}/*.otf
+          key: test-fonts-v1-${{ runner.os }}-${{ steps.test-fonts.outputs.hash }}
+      - name: Install Hydrolysis test fonts
+        shell: bash
+        # Fetches the GitHub-hosted sources as authenticated traffic.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: uv run "${{ steps.test-fonts.outputs.script }}"
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --all-targets --all-features
 
   lint:
     name: Lint
+    needs: bump
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,11 +112,57 @@ jobs:
 
   msrv:
     name: MSRV
+    needs: bump
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
+      # The floor is whatever `Cargo.toml` declares, read here rather than
+      # written twice: a hardcoded version in CI drifts from the manifest and
+      # then gates a number nobody declared.
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ -z "$version" ]; then
+            echo "::error::Cargo.toml declares no rust-version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Installing a toolchain is not building with it: the action only
+          # sets the rustup default, and this repository's
+          # `rust-toolchain.toml` overrides the default for every cargo
+          # invocation inside the checkout. Without this env var the job
+          # compiled on `stable` and proved nothing about the floor.
+          echo "RUSTUP_TOOLCHAIN=$version" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
       - name: Install Linux dependencies
         uses: ./.github/actions/linux-deps
       - uses: Swatinem/rust-cache@v2
+      # Proof in the log that the floor is what compiled, so a later change to
+      # the pin or the action cannot quietly make this a second stable run.
+      - name: Show the toolchain this job builds with
+        run: rustc --version && cargo --version
       - run: cargo check --workspace --all-features
+
+  result:
+    # The single check the `main` ruleset requires: it passes when every
+    # job passed or was skipped (release-plz bump pull requests skip all).
+    name: CI result
+    if: always()
+    needs: [bump, test, lint, msrv]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        env:
+          RESULTS: ${{ join(needs.*.result, ', ') }}
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "job results: $RESULTS"
+          if [ "$FAILED" = "true" ]; then
+            echo "::error::one or more jobs failed or were cancelled"
+            exit 1
+          fi
