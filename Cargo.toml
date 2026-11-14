@@ -139,7 +139,7 @@ waterui-webview = { git = "https://github.com/water-rs/waterui", branch = "dev" 
 # Split components at the sources the framework's own patch table names.
 # `hydrolysis` enters this graph only through `waterui-testing`, whose
 # workspace dependency already resolves it in-tree at the same commit.
-waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
+waterui-image = { git = "https://github.com/water-rs/image", branch = "main" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
 
 # The engine and its filter crates live in the waterui repository under
