@@ -4694,7 +4694,7 @@ dependencies = [
 [[package]]
 name = "shaderloom"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/shaderloom?branch=dev#9e0402afaf8263dc149a3fcb85601532fd5bb907"
+source = "git+https://github.com/water-rs/shaderloom?branch=main#9e0402afaf8263dc149a3fcb85601532fd5bb907"
 dependencies = [
  "serde",
  "toml",
@@ -4863,7 +4863,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "suiteki"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/suiteki?branch=dev#526dbb81f286752ba5d57e2913e234077331bfb5"
+source = "git+https://github.com/water-rs/suiteki?branch=main#526dbb81f286752ba5d57e2913e234077331bfb5"
 dependencies = [
  "nami-core",
  "serde",
@@ -6427,7 +6427,7 @@ dependencies = [
 [[package]]
 name = "wgpu-external-frame"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/wgpu-external-frame?branch=dev#d1bac57d42d9d6e8b7003e2d9760ac383161c972"
+source = "git+https://github.com/water-rs/wgpu-external-frame?branch=main#d1bac57d42d9d6e8b7003e2d9760ac383161c972"
 dependencies = [
  "ash",
  "glow",
@@ -7350,47 +7350,47 @@ dependencies = [
 [[patch.unused]]
 name = "waterkit-build"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#c94c528423e7e4b975523576b3bdbd86ac35987d"
+source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b975523576b3bdbd86ac35987d"
 
 [[patch.unused]]
 name = "waterkit-clipboard"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#c94c528423e7e4b975523576b3bdbd86ac35987d"
+source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b975523576b3bdbd86ac35987d"
 
 [[patch.unused]]
 name = "waterkit-codec"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#c94c528423e7e4b975523576b3bdbd86ac35987d"
+source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b975523576b3bdbd86ac35987d"
 
 [[patch.unused]]
 name = "waterkit-core"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#c94c528423e7e4b975523576b3bdbd86ac35987d"
+source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b975523576b3bdbd86ac35987d"
 
 [[patch.unused]]
 name = "waterkit-dialog"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#c94c528423e7e4b975523576b3bdbd86ac35987d"
+source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b975523576b3bdbd86ac35987d"
 
 [[patch.unused]]
 name = "waterkit-fs"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#c94c528423e7e4b975523576b3bdbd86ac35987d"
+source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b975523576b3bdbd86ac35987d"
 
 [[patch.unused]]
 name = "waterkit-location"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#c94c528423e7e4b975523576b3bdbd86ac35987d"
+source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b975523576b3bdbd86ac35987d"
 
 [[patch.unused]]
 name = "waterkit-permission"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#c94c528423e7e4b975523576b3bdbd86ac35987d"
+source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b975523576b3bdbd86ac35987d"
 
 [[patch.unused]]
 name = "waterkit-video-core"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#c94c528423e7e4b975523576b3bdbd86ac35987d"
+source = "git+https://github.com/water-rs/waterkit?branch=main#c94c528423e7e4b975523576b3bdbd86ac35987d"
 
 [[patch.unused]]
 name = "waterui-image"

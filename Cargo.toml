@@ -154,20 +154,20 @@ filtrate-derive = { git = "https://github.com/water-rs/waterui", branch = "dev" 
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki's
 # `dev` implements 0.5's (water-rs/suiteki#29), the source the framework's own
 # table names. Drop once a release carries it.
-suiteki = { git = "https://github.com/water-rs/suiteki", branch = "dev" }
+suiteki = { git = "https://github.com/water-rs/suiteki", branch = "main" }
 
 # water-rs/waterkit `dev`, the source the framework's own table names, with
 # the exact commit recorded in `Cargo.lock` — one commit serves every
 # waterkit crate the graph reaches so the shared types stay identical.
-waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-dialog = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-fs = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-location = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-permission = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
+waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 
 # Mirrored from water-rs/waterui's workspace [patch.crates-io] (itself
 # mirrored from the cherenkov workspace's table, water-rs/cherenkov#229).
@@ -180,7 +180,7 @@ waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "
 # The shader toolchain cherenkov-gpu builds its shaders with; the published
 # release lacks `workgroup_memory_sizes` on `PassthroughShaderEntryPoint`, which
 # the wgpu branch below requires, so it follows the framework's own source.
-shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "dev" }
+shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "main" }
 naga = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 naga-types = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 wgpu = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
@@ -194,4 +194,4 @@ wgpu-types = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-sha
 # wgpu-external-frame hands wgpu-hal's GLES textures to its own glow context, so
 # it must link the glow 0.18 the branch above carries; its crates.io 0.4.0 links
 # 0.17 (water-rs/wgpu-external-frame#43). Drop it with the wgpu entries.
-wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", branch = "dev" }
+wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", branch = "main" }
