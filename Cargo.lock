@@ -6054,7 +6054,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-map-gpu"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "blocking",
