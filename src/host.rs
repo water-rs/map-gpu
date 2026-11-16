@@ -34,7 +34,7 @@ use cherenkov_gpu::{
     interop::{SharedDevice, TextureTarget, shader_module},
 };
 use waterui_graphics::{
-    gpu::{Context, Frame, GpuContent, GpuContentView, RedrawHandle, wgpu},
+    gpu::{Context, Frame, GpuContent, GpuView, RedrawHandle, wgpu},
     input::SurfaceInputEvent,
 };
 
@@ -355,7 +355,7 @@ impl Host {
 }
 
 /// `scene` as a view drawn by [`GpuContent`].
-pub fn view(scene: MapScene) -> GpuContentView {
+pub fn view(scene: MapScene) -> GpuView {
     let shared = scene.shared();
     let interactive = scene.wants_input_events();
     let scene = Rc::new(RefCell::new(scene));
@@ -364,8 +364,8 @@ pub fn view(scene: MapScene) -> GpuContentView {
         scene: Rc::clone(&scene),
         drawing: None,
     });
-    let view = GpuContentView::new(MapContent { shared, blit: None })
-        .on_frame(move || host.borrow_mut().drive());
+    let view =
+        GpuView::new(MapContent { shared, blit: None }).on_frame(move || host.borrow_mut().drive());
     if interactive {
         view.on_input(move |event: &SurfaceInputEvent| scene.borrow_mut().input(event))
     } else {

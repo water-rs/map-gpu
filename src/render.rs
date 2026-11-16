@@ -30,7 +30,7 @@ use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
 use rayon::prelude::*;
 use waterui_core::animation::Animation;
 use waterui_graphics::{
-    gpu::GpuContentView,
+    gpu::GpuView,
     input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceInputEvent},
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
@@ -1360,7 +1360,7 @@ impl CameraMotion {
         self.displayed = interpolate_region(
             transition.from,
             transition.to,
-            f64::from(animation.progress(elapsed)),
+            animation.progress(elapsed),
         );
         (self.displayed, true)
     }
@@ -1829,11 +1829,11 @@ impl SurfaceCameraGesture {
 ///
 /// This is the public path from a hand-built scene to a renderable view: build
 /// a [`MapScene`] from a [`MapConfig`](waterui_map::MapConfig), hand it here,
-/// and place the returned [`GpuContentView`] like any other view. The built-in
+/// and place the returned [`GpuView`] like any other view. The built-in
 /// `Map` view goes through the same surface, adding the gesture
 /// controller that drives pan and zoom.
 #[must_use]
-pub fn map_surface(map: MapScene) -> GpuContentView {
+pub fn map_surface(map: MapScene) -> GpuView {
     map_surface_with_interaction(map, None)
 }
 
@@ -1842,7 +1842,7 @@ pub fn map_surface(map: MapScene) -> GpuContentView {
 pub fn map_surface_with_interaction(
     mut map: MapScene,
     interaction: Option<Rc<MapGestureController>>,
-) -> GpuContentView {
+) -> GpuView {
     map.interaction = interaction;
     host::view(map)
 }
@@ -4948,13 +4948,13 @@ mod tests {
         let shared = scene.shared();
         let mut view = host::view(scene);
         let size = OffscreenSize::try_from_pixels(64, 64).expect("non-zero size");
-        let mut renderer = GpuContentRenderer::new(
+        let mut renderer = pollster::block_on(GpuContentRenderer::new(
             &runtime,
             runtime.context(),
             view.take_engine_content(),
             size,
             RedrawHandle::new(|| {}),
-        )
+        ))
         .expect("the content renderer must open");
         let context = runtime.context();
         let target = context.device().create_texture(&wgpu::TextureDescriptor {
@@ -4982,8 +4982,7 @@ mod tests {
         // extent; the next ones render the surface it presents.
         for _ in 0..3 {
             view.frame();
-            renderer
-                .present(&target, display, FrameTime::now())
+            pollster::block_on(renderer.present(&target, display, FrameTime::now()))
                 .expect("the host frame must present");
         }
         assert_eq!(shared.rendered_pixels(), Some((64, 64)));
