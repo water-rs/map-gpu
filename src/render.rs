@@ -1357,11 +1357,8 @@ impl CameraMotion {
             self.transition = None;
             return (self.displayed, false);
         }
-        self.displayed = interpolate_region(
-            transition.from,
-            transition.to,
-            animation.progress(elapsed),
-        );
+        self.displayed =
+            interpolate_region(transition.from, transition.to, animation.progress(elapsed));
         (self.displayed, true)
     }
 }
