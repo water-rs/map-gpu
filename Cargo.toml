@@ -140,7 +140,7 @@ waterui-webview = { git = "https://github.com/water-rs/waterui", branch = "main"
 # `hydrolysis` enters this graph only through `waterui-testing`, whose
 # workspace dependency already resolves it in-tree at the same commit.
 waterui-image = { git = "https://github.com/water-rs/image", branch = "main" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
+waterui-svg = { git = "https://github.com/water-rs/svg", branch = "main" }
 
 # The engine and its filter crates live in the waterui repository under
 # `graphics/` and resolve to the same commit as the rest of the graph.
