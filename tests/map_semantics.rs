@@ -44,18 +44,15 @@ fn updated_annotations() -> Vec<Annotation> {
     ]
 }
 
-/// The GPU map is a realization the test installs, exactly as an application
-/// installs it in `app(env)`: `waterui-map` is the semantic component and
+/// The options the GPU map reads: `waterui-map` is the semantic component and
 /// `waterui-map-gpu` — a crate of its own that the `waterui` facade does not
-/// carry — supplies the `Hook<MapConfig>` that draws it. Hydrolysis keeps no
-/// map bridge, so a `Map` mounted without this environment panics in
-/// `native_measure.rs` instead of rendering.
+/// carry — draws it as Hydrolysis's realization, selected by its `map-gpu`
+/// feature as the CLI selects it for an application linking this crate.
 fn map_env() -> Environment {
     let mut env = Environment::new();
     env.insert(MapGpuOptions::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
-    waterui_map_gpu::install(&mut env);
     env
 }
 
