@@ -1,9 +1,9 @@
 //! GPU-drawn vector map realization for platforms without a native map primitive.
 //!
 //! The semantic [`waterui_map::Map`] API stays platform-neutral. A self-drawn
-//! application scopes the [`MapGpu`] hook over its views where no backend
-//! bridges a platform map, and provides a `MapLibre` style through
-//! [`MapGpuOptions`].
+//! backend that bridges no platform map draws `Map` with [`map`] when the
+//! application links this crate, and the application provides a `MapLibre`
+//! style through [`MapGpuOptions`].
 //!
 //! This realization fetches its style and vector tiles over the network, so an
 //! application using it must declare network access. On Android in particular,
@@ -28,14 +28,13 @@ use std::{
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
 use waterui_core::{
-    AnyView, Environment, Metadata, Str, View,
+    AnyView, Environment, Metadata, Str,
     accessibility::{AccessibilityLabel, AccessibilityRole},
     animation::Animation,
     gesture::{
         DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent,
         MagnificationGesture,
     },
-    view::hook::Hook,
 };
 use waterui_map::{Coordinate, MapConfig, MapStyle, Region};
 use waterui_url::Url;
@@ -291,11 +290,8 @@ impl MapGpuOptions {
     }
 }
 
-/// The GPU map as the realization of every `Map` in its scope.
-///
-/// An application scopes it over its views with `.hooks(MapGpu)` on a
-/// platform with no map to bridge; where a backend bridges the platform's own
-/// map — Apple's `MapKit` — the application leaves it out.
+/// The GPU map drawing `config`: how a backend with no platform map to
+/// bridge realizes a `Map`.
 ///
 /// The environment must contain [`MapGpuOptions`]. Keeping provider
 /// configuration in the application prevents `WaterUI` from hard-coding a tile
@@ -303,20 +299,8 @@ impl MapGpuOptions {
 ///
 /// # Panics
 ///
-/// Realizing a map panics when its environment has no [`MapGpuOptions`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MapGpu;
-
-impl Hook for MapGpu {
-    type Target = MapConfig;
-
-    fn apply(&self, config: MapConfig, env: &Environment) -> Result<impl View, MapConfig> {
-        Ok(map_view(env, config))
-    }
-}
-
-/// The GPU map drawing `config`.
-fn map_view(env: &Environment, mut config: MapConfig) -> AnyView {
+/// Panics when `env` has no [`MapGpuOptions`].
+pub fn map(env: &Environment, mut config: MapConfig) -> AnyView {
     let options = env
         .get::<MapGpuOptions>()
         .expect("GPU Map requires MapGpuOptions in the application environment")

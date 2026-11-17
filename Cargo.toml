@@ -90,7 +90,9 @@ cherenkov-cpu = "0.0.0"
 # `tests/map_semantics.rs` mounts through `waterui-testing` on the pinned
 # Hydrolysis host.
 waterui = "0.5.0"
-waterui-testing = "0.5.0"
+# Hydrolysis draws `Map` through this crate under `map-gpu`; the patch table
+# below resolves it to this checkout.
+waterui-testing = { version = "0.5.0", features = ["map-gpu"] }
 
 [package.metadata.waterui.permissions]
 internet = { reason = "downloads map styles and vector tiles" }
@@ -107,6 +109,8 @@ ignored = ["getrandom"]
 # under `backends/hydrolysis` — so their requirements resolve there too
 # (water-rs/waterui#1449).
 [patch.crates-io]
+# Hydrolysis's `map-gpu` realization is this crate.
+waterui-map-gpu = { path = "." }
 waterui = { git = "https://github.com/water-rs/waterui", branch = "refactor/typed-hooks" }
 waterui-assets = { git = "https://github.com/water-rs/waterui", branch = "refactor/typed-hooks" }
 waterui-assets-core = { git = "https://github.com/water-rs/waterui", branch = "refactor/typed-hooks" }
