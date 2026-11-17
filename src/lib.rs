@@ -1,8 +1,9 @@
 //! GPU-drawn vector map realization for platforms without a native map primitive.
 //!
 //! The semantic [`waterui_map::Map`] API stays platform-neutral. A self-drawn
-//! backend installs this realization and applications provide a `MapLibre` style
-//! through [`MapGpuOptions`]. Native backends do not install this hook.
+//! application scopes the [`MapGpu`] hook over its views where no backend
+//! bridges a platform map, and provides a `MapLibre` style through
+//! [`MapGpuOptions`].
 //!
 //! This realization fetches its style and vector tiles over the network, so an
 //! application using it must declare network access. On Android in particular,
@@ -27,14 +28,14 @@ use std::{
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
 use waterui_core::{
-    AnyView, Environment, Metadata, Str,
+    AnyView, Environment, Metadata, Str, View,
     accessibility::{AccessibilityLabel, AccessibilityRole},
     animation::Animation,
     gesture::{
         DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent,
         MagnificationGesture,
     },
-    view::Hook,
+    view::hook::Hook,
 };
 use waterui_map::{Coordinate, MapConfig, MapStyle, Region};
 use waterui_url::Url;
@@ -290,74 +291,78 @@ impl MapGpuOptions {
     }
 }
 
-/// Installs the GPU map as this application's map realization.
+/// The GPU map as the realization of every `Map` in its scope.
 ///
-/// The application calls this from its own `app(env)`, on a platform with no
-/// platform map to bridge. A backend that *does* bridge one — Apple's `MapKit`,
-/// say — registers its hook on the environment before the application is built,
-/// and that bridge is the realization the platform wants, so this yields to it
-/// and installs nothing.
+/// An application scopes it over its views with `.hooks(MapGpu)` on a
+/// platform with no map to bridge; where a backend bridges the platform's own
+/// map — Apple's `MapKit` — the application leaves it out.
 ///
-/// The application environment must contain [`MapGpuOptions`]. Keeping provider
+/// The environment must contain [`MapGpuOptions`]. Keeping provider
 /// configuration in the application prevents `WaterUI` from hard-coding a tile
 /// service.
 ///
 /// # Panics
 ///
-/// The installed hook panics when a GPU map is realized without
-/// [`MapGpuOptions`] in its environment.
-pub fn install(env: &mut Environment) {
-    if env.get::<Hook<MapConfig>>().is_some() {
-        return;
-    }
-    env.insert_hook::<MapConfig, AnyView>(|env, mut config| {
-        let options = env
-            .get::<MapGpuOptions>()
-            .expect("GPU Map requires MapGpuOptions in the application environment")
-            .clone();
-        let semantics = map_semantics(env, &config);
-        if !config.interactivity().is_interactive() {
-            return semantics.apply(AnyView::new(render::map_surface(MapScene::new(
-                &config, options,
-            ))));
-        }
+/// Realizing a map panics when its environment has no [`MapGpuOptions`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MapGpu;
 
-        let controller = Rc::new(MapGestureController::new(config.region()));
-        config.set_region(Computed::new(controller.region.clone()));
-        let scene = render::map_surface_with_interaction(
-            MapScene::with_viewport_signal(
-                &config,
-                options,
-                controller.viewport.clone(),
-                Computed::new(controller.settled_region.clone()),
-                Computed::new(controller.animate_camera_changes.clone()),
-            ),
-            Some(Rc::clone(&controller)),
-        );
-        let drag_controller = Rc::clone(&controller);
-        let magnification_controller = controller;
-        let scene = Metadata::new(
-            scene,
-            GestureObserver::new(
-                DragGesture::new(MAP_DRAG_MINIMUM_DISTANCE),
-                move |env: Environment| {
-                    drag_controller.handle_drag(
-                        env.get::<DragEvent>()
-                            .expect("DragGesture observer must receive a DragEvent"),
-                    );
-                },
-            ),
-        );
-        semantics.apply(AnyView::new(Metadata::new(
-            scene,
-            GestureObserver::new(MagnificationGesture::new(1.0), move |env: Environment| {
-                magnification_controller.handle_magnification(
-                    env.get::<MagnificationEvent>()
-                        .expect("MagnificationGesture observer must receive a MagnificationEvent"),
+impl Hook for MapGpu {
+    type Target = MapConfig;
+
+    fn apply(&self, config: MapConfig, env: &Environment) -> Result<impl View, MapConfig> {
+        Ok(map_view(env, config))
+    }
+}
+
+/// The GPU map drawing `config`.
+fn map_view(env: &Environment, mut config: MapConfig) -> AnyView {
+    let options = env
+        .get::<MapGpuOptions>()
+        .expect("GPU Map requires MapGpuOptions in the application environment")
+        .clone();
+    let semantics = map_semantics(env, &config);
+    if !config.interactivity().is_interactive() {
+        return semantics.apply(AnyView::new(render::map_surface(MapScene::new(
+            &config, options,
+        ))));
+    }
+
+    let controller = Rc::new(MapGestureController::new(config.region()));
+    config.set_region(Computed::new(controller.region.clone()));
+    let scene = render::map_surface_with_interaction(
+        MapScene::with_viewport_signal(
+            &config,
+            options,
+            controller.viewport.clone(),
+            Computed::new(controller.settled_region.clone()),
+            Computed::new(controller.animate_camera_changes.clone()),
+        ),
+        Some(Rc::clone(&controller)),
+    );
+    let drag_controller = Rc::clone(&controller);
+    let magnification_controller = controller;
+    let scene = Metadata::new(
+        scene,
+        GestureObserver::new(
+            DragGesture::new(MAP_DRAG_MINIMUM_DISTANCE),
+            move |env: Environment| {
+                drag_controller.handle_drag(
+                    env.get::<DragEvent>()
+                        .expect("DragGesture observer must receive a DragEvent"),
                 );
-            }),
-        )))
-    });
+            },
+        ),
+    );
+    semantics.apply(AnyView::new(Metadata::new(
+        scene,
+        GestureObserver::new(MagnificationGesture::new(1.0), move |env: Environment| {
+            magnification_controller.handle_magnification(
+                env.get::<MagnificationEvent>()
+                    .expect("MagnificationGesture observer must receive a MagnificationEvent"),
+            );
+        }),
+    )))
 }
 
 /// The accessibility identity the GPU map surface publishes.
@@ -717,47 +722,6 @@ impl MapLoadError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A backend that bridged the platform's own map registered its hook before
-    /// the application installed this realization, and that bridge wins.
-    #[test]
-    fn a_native_map_bridge_is_left_alone() {
-        use std::cell::Cell;
-
-        use waterui_core::view::ConfigurableView as _;
-        use waterui_map::Map;
-
-        let bridged = Rc::new(Cell::new(false));
-        let mut env = Environment::new();
-        env.insert_hook::<MapConfig, AnyView>({
-            let bridged = Rc::clone(&bridged);
-            move |_env, _config| {
-                bridged.set(true);
-                AnyView::new(())
-            }
-        });
-
-        install(&mut env);
-
-        let hook = env
-            .get::<Hook<MapConfig>>()
-            .expect("the bridge's hook must survive");
-        let region = Region::new(Coordinate::default(), 1.0, 1.0);
-        let _ = hook.apply(&env, Map::new(region).config());
-        assert!(
-            bridged.get(),
-            "the map must still be drawn by the platform bridge"
-        );
-    }
-
-    /// With no bridge registered, this crate is the realization.
-    #[test]
-    fn an_unbridged_map_gets_the_gpu_realization() {
-        let mut env = Environment::new();
-        assert!(env.get::<Hook<MapConfig>>().is_none());
-        install(&mut env);
-        assert!(env.get::<Hook<MapConfig>>().is_some());
-    }
 
     /// The surface draws into one GPU texture, so this label is the only thing
     /// assistive technology can read off the map.
