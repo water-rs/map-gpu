@@ -111,36 +111,36 @@ ignored = ["getrandom"]
 [patch.crates-io]
 # Hydrolysis's `map-gpu` realization is this crate.
 waterui-map-gpu = { path = "." }
-waterui = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-assets = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-assets-core = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-assets-macros = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-assets-planner = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-capture = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-backend-core = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-controls = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-core = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-dylib = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-form = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-icon = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-internal = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-layout = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-locale = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-macros = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-map = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-media = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-navigation = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-resources = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-shape = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-testing = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-text = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-url = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-video = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-watcher-set = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-waterui-webview = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
+waterui = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-capture = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-core = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-form = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-map = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-media = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-resources = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-testing = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-text = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-url = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-video = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", branch = "main" }
 
 # Split components at the sources the framework's own patch table names.
 # `hydrolysis` enters this graph only through `waterui-testing`, whose
@@ -150,12 +150,12 @@ waterui-svg = { git = "https://github.com/water-rs/svg", branch = "main" }
 
 # The engine and its filter crates live in the waterui repository under
 # `graphics/` and resolve to the same commit as the rest of the graph.
-cherenkov = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-cherenkov-cpu = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-cherenkov-gpu = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-filtrate = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-filtrate-core = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
-filtrate-derive = { git = "https://github.com/water-rs/waterui", branch = "refactor/4816-static-gpu-view" }
+cherenkov = { git = "https://github.com/water-rs/waterui", branch = "main" }
+cherenkov-cpu = { git = "https://github.com/water-rs/waterui", branch = "main" }
+cherenkov-gpu = { git = "https://github.com/water-rs/waterui", branch = "main" }
+filtrate = { git = "https://github.com/water-rs/waterui", branch = "main" }
+filtrate-core = { git = "https://github.com/water-rs/waterui", branch = "main" }
+filtrate-derive = { git = "https://github.com/water-rs/waterui", branch = "main" }
 
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki's
 # `dev` implements 0.5's (water-rs/suiteki#29), the source the framework's own
