@@ -355,7 +355,7 @@ impl Host {
 }
 
 /// `scene` as a view drawn by [`GpuContent`].
-pub fn view(scene: MapScene) -> GpuView {
+pub fn view(scene: MapScene) -> GpuView<impl GpuContent> {
     let shared = scene.shared();
     let interactive = scene.wants_input_events();
     let scene = Rc::new(RefCell::new(scene));

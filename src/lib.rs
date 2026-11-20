@@ -745,8 +745,6 @@ mod tests {
     /// An application that already described the map keeps its own wording.
     #[test]
     fn application_supplied_semantics_win() {
-        use waterui_core::view::ConfigurableView as _;
-
         let mut env = Environment::new();
         env.insert(AccessibilityLabel::new("City map"));
         env.insert(AccessibilityRole::Image);

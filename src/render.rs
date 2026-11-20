@@ -30,7 +30,7 @@ use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
 use rayon::prelude::*;
 use waterui_core::animation::Animation;
 use waterui_graphics::{
-    gpu::GpuView,
+    gpu::{GpuContent, GpuView},
     input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceInputEvent},
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
@@ -1830,7 +1830,7 @@ impl SurfaceCameraGesture {
 /// `Map` view goes through the same surface, adding the gesture
 /// controller that drives pan and zoom.
 #[must_use]
-pub fn map_surface(map: MapScene) -> GpuView {
+pub fn map_surface(map: MapScene) -> GpuView<impl GpuContent> {
     map_surface_with_interaction(map, None)
 }
 
@@ -1839,7 +1839,7 @@ pub fn map_surface(map: MapScene) -> GpuView {
 pub fn map_surface_with_interaction(
     mut map: MapScene,
     interaction: Option<Rc<MapGestureController>>,
-) -> GpuView {
+) -> GpuView<impl GpuContent> {
     map.interaction = interaction;
     host::view(map)
 }
@@ -4067,7 +4067,6 @@ mod tests {
     use cherenkov_gpu::{Gpu, GpuConfig};
     use kurbo::{PathEl, Point};
     use num_traits::ToPrimitive as _;
-    use waterui_core::view::ConfigurableView as _;
     use waterui_graphics::{
         OffscreenImage, OffscreenSize,
         gpu::{GpuContentRenderer, GpuRuntime, RedrawHandle},
