@@ -116,6 +116,7 @@ waterui-assets = { git = "https://github.com/water-rs/waterui", branch = "main" 
 waterui-assets-core = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-assets-macros = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-assets-planner = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-capture = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-backend-core = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-controls = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-core = { git = "https://github.com/water-rs/waterui", branch = "main" }
@@ -131,6 +132,7 @@ waterui-macros = { git = "https://github.com/water-rs/waterui", branch = "main" 
 waterui-map = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-media = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-navigation = { git = "https://github.com/water-rs/waterui", branch = "main" }
+waterui-resources = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-shape = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-testing = { git = "https://github.com/water-rs/waterui", branch = "main" }
