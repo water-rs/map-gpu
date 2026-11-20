@@ -63,8 +63,10 @@ serde_json = "1.0"
 thiserror = "2.0.19"
 tracing = "0.1.44"
 url = "2.5"
+waterui-accessibility = { version = "0.5.1", git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-core = { version = "0.5.0" }
 waterui-graphics = { version = "0.5.0" }
+waterui-interaction = { version = "0.5.1", git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-map = { version = "0.5.0" }
 waterui-url = { version = "0.5.0", features = ["std"] }
 
@@ -93,6 +95,7 @@ waterui = "0.5.0"
 # Hydrolysis draws `Map` through this crate under `map-gpu`; the patch table
 # below resolves it to this checkout.
 waterui-testing = { version = "0.5.0", features = ["map-gpu"] }
+waterui-graphics = { version = "0.5.0", features = ["image-decode"] }
 
 [package.metadata.waterui.permissions]
 internet = { reason = "downloads map styles and vector tiles" }
