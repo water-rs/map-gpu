@@ -27,14 +27,10 @@ use std::{
 };
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
-use waterui_core::{
-    AnyView, Environment, Metadata, Str,
-    accessibility::{AccessibilityLabel, AccessibilityRole},
-    animation::Animation,
-    gesture::{
-        DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent,
-        MagnificationGesture,
-    },
+use waterui_accessibility::{AccessibilityLabel, AccessibilityRole};
+use waterui_core::{AnyView, Environment, Metadata, Str, animation::Animation};
+use waterui_interaction::gesture::{
+    DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent, MagnificationGesture,
 };
 use waterui_map::{Coordinate, MapConfig, MapStyle, Region};
 use waterui_url::Url;
@@ -761,7 +757,7 @@ mod tests {
         assert!(semantics.role.is_none());
     }
 
-    use waterui_core::gesture::{GesturePoint, PointerButton};
+    use waterui_interaction::gesture::{GesturePoint, PointerButton};
 
     fn manhattan_region() -> Region {
         Region::new(
