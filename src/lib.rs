@@ -33,6 +33,7 @@ use waterui_interaction::gesture::{
     DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent, MagnificationGesture,
 };
 use waterui_map::{Coordinate, MapConfig, MapStyle, Region};
+use waterui_text::FontCollection;
 use waterui_url::Url;
 
 pub use render::{MapScene, map_surface};
@@ -289,22 +290,25 @@ impl MapGpuOptions {
 /// The GPU map drawing `config`: how a backend with no platform map to
 /// bridge realizes a `Map`.
 ///
-/// The environment must contain [`MapGpuOptions`]. Keeping provider
-/// configuration in the application prevents `WaterUI` from hard-coding a tile
-/// service.
+/// The environment must contain [`MapGpuOptions`] and the host's
+/// [`FontCollection`]. Keeping provider configuration in the application
+/// prevents `WaterUI` from hard-coding a tile service, and sharing the host's
+/// font collection avoids enumerating fonts per map instance.
 ///
 /// # Panics
 ///
-/// Panics when `env` has no [`MapGpuOptions`].
+/// Panics when `env` has no [`MapGpuOptions`] or no installed
+/// [`FontCollection`].
 pub fn map(env: &Environment, mut config: MapConfig) -> AnyView {
     let options = env
         .get::<MapGpuOptions>()
         .expect("GPU Map requires MapGpuOptions in the application environment")
         .clone();
+    let fonts = FontCollection::from_env(env);
     let semantics = map_semantics(env, &config);
     if !config.interactivity().is_interactive() {
         return semantics.apply(AnyView::new(render::map_surface(MapScene::new(
-            &config, options,
+            &config, options, fonts,
         ))));
     }
 
@@ -314,6 +318,7 @@ pub fn map(env: &Environment, mut config: MapConfig) -> AnyView {
         MapScene::with_viewport_signal(
             &config,
             options,
+            fonts,
             controller.viewport.clone(),
             Computed::new(controller.settled_region.clone()),
             Computed::new(controller.animate_camera_changes.clone()),
