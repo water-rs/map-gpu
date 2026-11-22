@@ -25,7 +25,7 @@ use kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, Shape as _, Stroke};
 use lru::LruCache;
 use maplibre_expr::{EvaluationContext, Value, evaluate};
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
-use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
+use parley::{LayoutContext, PositionedLayoutItem, StyleProperty};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use waterui_core::animation::Animation;
@@ -34,6 +34,7 @@ use waterui_graphics::{
     input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceInputEvent},
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
+use waterui_text::FontCollection;
 
 use crate::{
     MapGestureController, MapGpuOptions, MapLoadError,
@@ -743,10 +744,19 @@ impl PreparedMap {
         region: Region,
         width: u32,
         height: u32,
+        fonts: FontCollection,
     ) -> Result<Self, MapLoadError> {
         let style = MapStyle::load(options, waterui_map::MapStyle::Standard).await?;
         let cache = Rc::new(RefCell::new(TileCache::new(options.tile_cache_bytes.get())));
-        Self::load_with_style(options, style, region, Viewport { width, height }, cache).await
+        Self::load_with_style(
+            options,
+            style,
+            region,
+            Viewport { width, height },
+            cache,
+            fonts,
+        )
+        .await
     }
 
     #[allow(
@@ -759,6 +769,7 @@ impl PreparedMap {
         region: Region,
         viewport: Viewport,
         cache: Rc<RefCell<TileCache>>,
+        fonts: FontCollection,
     ) -> Result<Self, MapLoadError> {
         let (min_zoom, max_zoom) = MapStyle::camera_zoom_range();
         let camera = Camera::new(region, viewport, min_zoom, max_zoom);
@@ -812,7 +823,7 @@ impl PreparedMap {
             style,
             camera,
             tiles,
-            painter: MapPainter::default(),
+            painter: MapPainter::new(fonts),
             registrations: Registrations::default(),
             label_registrations: Registrations::default(),
             recorded: BTreeMap::new(),
@@ -1153,6 +1164,7 @@ struct MapRequestTask {
     region: Region,
     viewport: Viewport,
     options: MapGpuOptions,
+    fonts: FontCollection,
     state: Rc<RefCell<MapSceneState>>,
     cache: Rc<RefCell<TileCache>>,
     shared: Arc<Shared>,
@@ -1203,6 +1215,7 @@ impl MapRequestTask {
             self.region,
             self.viewport,
             Rc::clone(&self.cache),
+            self.fonts.clone(),
         )
         .await
         .map(|prepared| (style, prepared));
@@ -1442,11 +1455,12 @@ impl std::fmt::Debug for MapScene {
 impl MapScene {
     /// Creates live scene content from the semantic map configuration.
     #[must_use]
-    pub fn new(config: &MapConfig, options: MapGpuOptions) -> Self {
+    pub fn new(config: &MapConfig, options: MapGpuOptions, fonts: FontCollection) -> Self {
         let request_region = config.region().clone();
         Self::with_viewport_signal(
             config,
             options,
+            fonts,
             binding(None),
             request_region,
             Computed::constant(false),
@@ -1456,6 +1470,7 @@ impl MapScene {
     pub(crate) fn with_viewport_signal(
         config: &MapConfig,
         options: MapGpuOptions,
+        fonts: FontCollection,
         viewport_size: Binding<Option<(f32, f32)>>,
         request_region: Computed<Region>,
         animate_camera_changes: Computed<bool>,
@@ -1503,7 +1518,7 @@ impl MapScene {
                 last_error: None,
             })),
             _watchers: watchers,
-            painter: MapPainter::default(),
+            painter: MapPainter::new(fonts),
             camera_motion: CameraMotion::new(initial_region),
             registrations: Registrations::default(),
             interaction: None,
@@ -1551,6 +1566,7 @@ impl MapScene {
                 region,
                 viewport,
                 options: self.options.clone(),
+                fonts: self.painter.fonts.clone(),
                 state: Rc::clone(&self.state),
                 cache: Rc::clone(&self.cache),
                 shared: Arc::clone(&self.shared),
@@ -2016,11 +2032,20 @@ impl<B: Backend> Retained<B> {
     }
 }
 
-#[derive(Default)]
 struct MapPainter {
-    fonts: FontContext,
+    fonts: FontCollection,
     layouts: LayoutContext<[u8; 4]>,
     occupied_labels: Vec<Rect>,
+}
+
+impl MapPainter {
+    fn new(fonts: FontCollection) -> Self {
+        Self {
+            fonts,
+            layouts: LayoutContext::new(),
+            occupied_labels: Vec::new(),
+        }
+    }
 }
 
 #[allow(
@@ -2627,14 +2652,15 @@ impl MapPainter {
             property_string(layer, "text-anchor", &context).unwrap_or_else(|| "center".into());
         let offset = property_number_pair(layer, "text-offset", &context).unwrap_or((0.0, 0.0));
 
-        let mut builder = self
-            .layouts
-            .ranged_builder(&mut self.fonts, &text, 1.0, true);
-        builder.push_default(StyleProperty::FontSize(size));
-        builder.push_default(StyleProperty::FontFamily(
-            parley::style::GenericFamily::SansSerif.into(),
-        ));
-        let mut layout = builder.build(&text);
+        let layouts = &mut self.layouts;
+        let mut layout = self.fonts.with_parley(|fonts| {
+            let mut builder = layouts.ranged_builder(fonts, &text, 1.0, true);
+            builder.push_default(StyleProperty::FontSize(size));
+            builder.push_default(StyleProperty::FontFamily(
+                parley::style::GenericFamily::SansSerif.into(),
+            ));
+            builder.build(&text)
+        });
         layout.break_all_lines(None);
         let (width, height) = (f64::from(layout.width()), f64::from(layout.height()));
         let mut runs = Vec::new();
@@ -2647,7 +2673,11 @@ impl MapPainter {
                 runs.push(LabelRun {
                     font: run.font().clone(),
                     font_size: run.font_size(),
-                    coords: Arc::<[i16]>::from(run.normalized_coords()),
+                    coords: run
+                        .normalized_coords()
+                        .iter()
+                        .map(|coord| coord.to_bits())
+                        .collect(),
                     glyphs: glyphs(&glyph_run),
                 });
             }
@@ -2781,14 +2811,15 @@ impl MapPainter {
         registrations: &mut Registrations,
         resources: &dyn Resources,
     ) {
-        let mut builder = self
-            .layouts
-            .ranged_builder(&mut self.fonts, text, 1.0, true);
-        builder.push_default(StyleProperty::FontSize(size));
-        builder.push_default(StyleProperty::FontFamily(
-            parley::style::GenericFamily::SansSerif.into(),
-        ));
-        let mut layout = builder.build(text);
+        let layouts = &mut self.layouts;
+        let mut layout = self.fonts.with_parley(|fonts| {
+            let mut builder = layouts.ranged_builder(fonts, text, 1.0, true);
+            builder.push_default(StyleProperty::FontSize(size));
+            builder.push_default(StyleProperty::FontFamily(
+                parley::style::GenericFamily::SansSerif.into(),
+            ));
+            builder.build(text)
+        });
         layout.break_all_lines(None);
         let width = f64::from(layout.width());
         let height = f64::from(layout.height());
@@ -2826,7 +2857,11 @@ impl MapPainter {
                 let Some(font) = registrations.font(run.font(), resources) else {
                     continue;
                 };
-                let coords = Arc::<[i16]>::from(run.normalized_coords());
+                let coords: Arc<[i16]> = run
+                    .normalized_coords()
+                    .iter()
+                    .map(|coord| coord.to_bits())
+                    .collect();
                 let run_glyphs = glyphs(&glyph_run);
                 let run_of = |style: GlyphStyle| GlyphRun {
                     font,
@@ -4274,6 +4309,16 @@ mod tests {
         assert_eq!(controller.settled_region.snapshot(), visible);
     }
 
+    fn faceless_fonts() -> FontCollection {
+        FontCollection::from_parley(parley::FontContext {
+            collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
+                system_fonts: false,
+                ..parley::fontique::CollectionOptions::default()
+            }),
+            source_cache: parley::fontique::SourceCache::default(),
+        })
+    }
+
     #[test]
     fn network_failure_keeps_map_alive_without_prepared_tiles() {
         let region = manhattan_region(0.030, 0.050);
@@ -4288,7 +4333,7 @@ mod tests {
             .shows_scale(false)
             .config();
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut map = MapScene::new(&config, options);
+        let mut map = MapScene::new(&config, options, faceless_fonts());
         {
             let mut state = map.state.borrow_mut();
             state.request = Some(RequestKey { region, viewport });
@@ -4327,11 +4372,12 @@ mod tests {
             layers: Vec::new(),
             fingerprint: 0,
         };
+        let fonts = faceless_fonts();
         let prepared = PreparedMap {
             style: style.clone(),
             camera: Camera::new(region, viewport, 0, 22),
             tiles: SourceTiles::default(),
-            painter: MapPainter::default(),
+            painter: MapPainter::new(fonts.clone()),
             registrations: Registrations::default(),
             label_registrations: Registrations::default(),
             recorded: BTreeMap::new(),
@@ -4344,7 +4390,7 @@ mod tests {
             .shows_scale(false)
             .config();
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
-        let mut map = MapScene::new(&config, options);
+        let mut map = MapScene::new(&config, options, fonts);
         {
             let mut state = map.state.borrow_mut();
             state.style = Some(style);
@@ -4566,7 +4612,7 @@ mod tests {
                 raster: BTreeMap::new(),
                 dem: BTreeMap::new(),
             },
-            painter: MapPainter::default(),
+            painter: MapPainter::new(FontCollection::system()),
             registrations: Registrations::default(),
             label_registrations: Registrations::default(),
             recorded: BTreeMap::new(),
@@ -4590,9 +4636,11 @@ mod tests {
             .config();
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let initial = region.snapshot();
+        let fonts = prepared.painter.fonts.clone();
         let scene = MapScene::with_viewport_signal(
             &config,
             options,
+            fonts,
             binding(None),
             Computed::constant(initial),
             Computed::constant(false),
@@ -5073,18 +5121,89 @@ mod tests {
         let output_dir = std::path::Path::new("/tmp/waterui_map_gpu");
         std::fs::create_dir_all(output_dir).expect("cached map output directory must be created");
 
-        let prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
-            .expect("OpenFreeMap Manhattan scene must load");
+        let fonts = FontCollection::system();
+        let prepared = pollster::block_on(PreparedMap::load(
+            &options,
+            region,
+            width,
+            height,
+            fonts.clone(),
+        ))
+        .expect("OpenFreeMap Manhattan scene must load");
         let cpu = Engine::<Raster>::new(RasterConfig::default()).expect("a CPU engine");
         render_prepared(&cpu, prepared, region, (width, height))
             .save_png(output_dir.join("cached_camera_cpu.png"))
             .expect("cached map CPU output must be saved");
 
-        let prepared = pollster::block_on(PreparedMap::load(&options, region, width, height))
-            .expect("OpenFreeMap Manhattan scene must load");
+        let prepared =
+            pollster::block_on(PreparedMap::load(&options, region, width, height, fonts))
+                .expect("OpenFreeMap Manhattan scene must load");
         let gpu = Engine::<Gpu>::new(GpuConfig::default()).expect("a GPU engine");
         render_prepared(&gpu, prepared, region, (width, height))
             .save_png(output_dir.join("cached_camera.png"))
             .expect("cached map GPU output must be saved");
+    }
+
+    /// Every map in an application shares the one [`FontCollection`] the host
+    /// installed into the environment rather than enumerating system fonts per
+    /// instance.
+    #[test]
+    fn two_maps_in_one_environment_share_one_font_collection() {
+        let mut env = waterui_core::Environment::new();
+        let installed = faceless_fonts();
+        let identity = installed.identity();
+        installed.install(&mut env);
+
+        let region = manhattan_region(0.030, 0.050);
+        let config = Map::new(region)
+            .style(waterui_map::MapStyle::Standard)
+            .is_interactive(false)
+            .config();
+        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let first = MapScene::new(&config, options.clone(), FontCollection::from_env(&env));
+        let second = MapScene::new(&config, options, FontCollection::from_env(&env));
+
+        assert_eq!(first.painter.fonts.identity(), identity);
+        assert_eq!(second.painter.fonts.identity(), identity);
+    }
+
+    /// Symbol label shaping consults the passed [`FontCollection`] rather than
+    /// discovering system fonts behind its back: a faceless collection produces
+    /// no glyph runs, whereas the system collection shapes the same label.
+    #[test]
+    fn the_installed_font_collection_shapes_map_labels() {
+        let style = crate::visual_fixture::style();
+        let symbol_layer = style
+            .layers
+            .iter()
+            .find(|layer| layer.kind == LayerKind::Symbol)
+            .expect("city fixture style includes a symbol layer");
+        let camera = Camera::new(
+            manhattan_region(0.030, 0.050),
+            Viewport {
+                width: 800,
+                height: 600,
+            },
+            0,
+            22,
+        );
+        let tile = crate::visual_fixture::tile(TileId { z: 12, x: 1, y: 1 });
+        let feature = &tile.layers["place"].features[0];
+
+        let mut empty_painter = MapPainter::new(faceless_fonts());
+        assert!(
+            empty_painter
+                .shape_label(symbol_layer, camera, feature)
+                .is_none(),
+            "a faceless FontCollection must yield no glyph runs"
+        );
+
+        let mut system_painter = MapPainter::new(FontCollection::system());
+        assert!(
+            system_painter
+                .shape_label(symbol_layer, camera, feature)
+                .is_some(),
+            "the system FontCollection must shape the symbol label"
+        );
     }
 }

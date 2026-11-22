@@ -55,7 +55,9 @@ maplibre-expr = "0.3.2"
 mvt-reader = "2.4.0"
 nami = "0.13"
 native-executor = "0.8.0"
-parley = { version = "0.11", default-features = false, features = ["system"] }
+# Label shaping borrows the `parley` context inside the host's shared
+# `FontCollection`; font discovery belongs to the host, never this crate.
+parley = { version = "0.12", default-features = false }
 rayon = "1.12"
 rustc-hash = "2"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
@@ -68,6 +70,7 @@ waterui-core = { version = "0.5.0" }
 waterui-graphics = { version = "0.5.0" }
 waterui-interaction = { version = "0.5.1", git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-map = { version = "0.5.0" }
+waterui-text = { version = "0.5.1", default-features = false, features = ["engine"] }
 waterui-url = { version = "0.5.0", features = ["std"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
@@ -96,6 +99,7 @@ waterui = "0.5.0"
 # below resolves it to this checkout.
 waterui-testing = { version = "0.5.0", features = ["map-gpu"] }
 waterui-graphics = { version = "0.5.0", features = ["image-decode"] }
+waterui-text = { version = "0.5.1", default-features = false, features = ["system-fonts"] }
 
 [package.metadata.waterui.permissions]
 internet = { reason = "downloads map styles and vector tiles" }
