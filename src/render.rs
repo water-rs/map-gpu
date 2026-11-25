@@ -24,14 +24,15 @@ use geo_types::{Coord, Geometry, LineString, MultiLineString, MultiPolygon, Poly
 use kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, Shape as _, Stroke};
 use lru::LruCache;
 use maplibre_expr::{EvaluationContext, Value, evaluate};
-use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
+use nami::{Binding, Computed, Signal, SignalExt as _, binding, watcher::BoxWatcherGuard};
 use parley::{LayoutContext, PositionedLayoutItem, StyleProperty};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use waterui_core::animation::Animation;
+use waterui_core::id::Id;
 use waterui_graphics::{
     gpu::{GpuContent, GpuView},
-    input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceInputEvent},
+    input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceInputEvent, SurfacePointerButton},
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
 use waterui_text::FontCollection;
@@ -1314,6 +1315,7 @@ struct ResolvedMapFrame {
     /// The generation a resolved frame was prepared at.
     prepared_generation: Option<u64>,
     annotations: Vec<Annotation>,
+    selected_annotation: Option<Id>,
     location: Option<Location>,
     animating: bool,
 }
@@ -1414,6 +1416,7 @@ pub struct MapScene {
     request_region: Computed<Region>,
     animate_camera_changes: Computed<bool>,
     annotations: Computed<Vec<Annotation>>,
+    selection: Option<Binding<Option<Id>>>,
     location: Computed<Option<Location>>,
     map_style: waterui_map::MapStyle,
     status: Option<Binding<MapStatus>>,
@@ -1456,12 +1459,14 @@ impl MapScene {
     /// Creates live scene content from the semantic map configuration.
     #[must_use]
     pub fn new(config: &MapConfig, options: MapGpuOptions, fonts: FontCollection) -> Self {
-        let request_region = config.region().clone();
+        let region = config.camera().computed();
+        let request_region = region.clone();
         Self::with_viewport_signal(
             config,
             options,
             fonts,
             binding(None),
+            region,
             request_region,
             Computed::constant(false),
         )
@@ -1472,6 +1477,7 @@ impl MapScene {
         options: MapGpuOptions,
         fonts: FontCollection,
         viewport_size: Binding<Option<(f32, f32)>>,
+        region: Computed<Region>,
         request_region: Computed<Region>,
         animate_camera_changes: Computed<bool>,
     ) -> Self {
@@ -1480,25 +1486,34 @@ impl MapScene {
             .filter(|_| config.user_location_visibility().is_visible())
             .cloned()
             .unwrap_or_else(|| Computed::constant(None));
+        let selection = config.selection().cloned();
         let shared = Arc::new(Shared::default());
         let overlay_epoch = Rc::new(Cell::new(0));
-        let initial_region = config.region().snapshot();
-        let mut watchers = Vec::with_capacity(4);
-        for signal in [config.region() as &dyn ErasedWakeSignal, &request_region] {
+        let initial_region = region.snapshot();
+        let mut watchers = Vec::with_capacity(5);
+        for signal in [&region as &dyn ErasedWakeSignal, &request_region] {
             watchers.push(signal.wake_guard(Arc::clone(&shared), None));
         }
         // What the overlays show: a change records them again.
         for signal in [config.annotations() as &dyn ErasedWakeSignal, &location] {
             watchers.push(signal.wake_guard(Arc::clone(&shared), Some(Rc::clone(&overlay_epoch))));
         }
+        if let Some(selection) = &selection {
+            watchers.push(
+                selection
+                    .computed()
+                    .wake_guard(Arc::clone(&shared), Some(Rc::clone(&overlay_epoch))),
+            );
+        }
         Self {
             cache: Rc::new(RefCell::new(TileCache::new(options.tile_cache_bytes.get()))),
             options,
             viewport_size,
-            region: config.region().clone(),
+            region,
             request_region,
             animate_camera_changes,
             annotations: config.annotations().clone(),
+            selection,
             location,
             map_style: config.style(),
             status: config.status().cloned(),
@@ -1619,6 +1634,7 @@ impl MapScene {
             camera,
             prepared_generation: state.prepared_generation,
             annotations: self.annotations.snapshot(),
+            selected_annotation: self.selection.as_ref().and_then(Signal::snapshot),
             location: self.location.snapshot(),
             animating,
         }
@@ -1667,7 +1683,7 @@ impl MapScene {
 
     /// Whether this map takes input on its surface.
     pub(crate) const fn wants_input_events(&self) -> bool {
-        self.interaction.is_some()
+        self.interaction.is_some() || self.selection.is_some()
     }
 
     #[expect(
@@ -1676,6 +1692,16 @@ impl MapScene {
         reason = "the scroll offset is a display-space pixel distance and the viewport size is clamped to at least one"
     )]
     pub(crate) fn input(&mut self, event: &SurfaceInputEvent) {
+        if let SurfaceInputEvent::PointerButton {
+            pressed: true,
+            button: SurfacePointerButton::Primary,
+            position,
+            ..
+        } = event
+        {
+            self.select_annotation_at(*position);
+            return;
+        }
         let SurfaceInputEvent::Scroll {
             delta_x,
             delta_y,
@@ -1739,6 +1765,49 @@ impl MapScene {
             self.scroll_offset = Point::ZERO;
         }
         self.shared.wake();
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the viewport dimensions are clamped to at least one point"
+    )]
+    fn select_annotation_at(&self, position: Point) {
+        /// Tap hit-test radius around a map annotation pin in logical points.
+        const ANNOTATION_HIT_RADIUS_PT: f64 = 18.0;
+
+        let Some(selection) = &self.selection else {
+            return;
+        };
+        let Some((width, height)) = self.viewport_size.snapshot() else {
+            return;
+        };
+        let viewport = Viewport {
+            width: width.max(1.0) as u32,
+            height: height.max(1.0) as u32,
+        };
+        let (min_zoom, max_zoom) = MapStyle::camera_zoom_range();
+        let camera = Camera::new(self.region.snapshot(), viewport, min_zoom, max_zoom);
+        let max_distance_sq = ANNOTATION_HIT_RADIUS_PT * ANNOTATION_HIT_RADIUS_PT;
+        let hit = self
+            .annotations
+            .snapshot()
+            .into_iter()
+            .filter_map(|annotation| {
+                let (x, y) = camera.coordinate_point(annotation.coordinate());
+                let dx = position.x - x;
+                let dy = position.y - y;
+                let distance_sq = dx.mul_add(dx, dy * dy);
+                (distance_sq <= max_distance_sq).then_some((distance_sq, *annotation.id()))
+            })
+            .min_by(|(a, _), (b, _)| a.total_cmp(b))
+            .map(|(_, id)| id);
+        if selection.snapshot() != hit {
+            selection.set(hit);
+            self.overlay_epoch
+                .set(self.overlay_epoch.get().wrapping_add(1));
+            self.shared.wake();
+        }
     }
 }
 
@@ -1974,6 +2043,7 @@ impl<B: Backend> Retained<B> {
                     recorder,
                     camera,
                     &frame.annotations,
+                    frame.selected_annotation,
                     frame.location.as_ref(),
                     scene.chrome,
                     &mut scene.registrations,
@@ -2021,6 +2091,7 @@ impl<B: Backend> Retained<B> {
                     recorder,
                     camera,
                     &frame.annotations,
+                    frame.selected_annotation,
                     frame.location.as_ref(),
                     scene.chrome,
                     &mut scene.registrations,
@@ -2506,18 +2577,30 @@ impl MapPainter {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "overlay pass threads camera, annotations, selection, location, chrome, and engine registries"
+    )]
     fn paint_overlays(
         &mut self,
         scene: &mut impl ReplayDraw,
         camera: Camera,
         annotations: &[Annotation],
+        selected_annotation: Option<Id>,
         location: Option<&Location>,
         chrome: MapChrome,
         registrations: &mut Registrations,
         resources: &dyn Resources,
     ) {
         self.occupied_labels.clear();
-        self.paint_annotations(scene, camera, annotations, registrations, resources);
+        self.paint_annotations(
+            scene,
+            camera,
+            annotations,
+            selected_annotation,
+            registrations,
+            resources,
+        );
         if let Some(location) = location {
             Self::paint_location(scene, camera, location);
         }
@@ -2891,21 +2974,36 @@ impl MapPainter {
         scene: &mut impl ReplayDraw,
         camera: Camera,
         annotations: &[Annotation],
+        selected_annotation: Option<Id>,
         registrations: &mut Registrations,
         resources: &dyn Resources,
     ) {
         for annotation in annotations {
             let (x, y) = camera.coordinate_point(annotation.coordinate());
-            let marker = ShapeData::of(&Circle::new((x, y), 6.0).to_path(0.1));
-            scene.fill(
-                Fixed(marker),
-                Fixed(Paint::from(Color::new([0.86, 0.12, 0.18, 1.0]))),
-            );
+            let selected = selected_annotation == Some(*annotation.id());
+            if selected {
+                let halo = ShapeData::of(&Circle::new((x, y), 10.0).to_path(0.1));
+                scene.fill(
+                    Fixed(halo),
+                    Fixed(Paint::from(Color::new([1.0, 1.0, 1.0, 1.0]))),
+                );
+                let marker = ShapeData::of(&Circle::new((x, y), 7.5).to_path(0.1));
+                scene.fill(
+                    Fixed(marker),
+                    Fixed(Paint::from(Color::new([0.08, 0.45, 0.95, 1.0]))),
+                );
+            } else {
+                let marker = ShapeData::of(&Circle::new((x, y), 6.0).to_path(0.1));
+                scene.fill(
+                    Fixed(marker),
+                    Fixed(Paint::from(Color::new([0.86, 0.12, 0.18, 1.0]))),
+                );
+            }
             self.draw_label(
                 scene,
                 annotation.title().as_str(),
                 13.0,
-                (x, y - 15.0),
+                (x, y - if selected { 19.0 } else { 15.0 }),
                 "center",
                 (0.0, 0.0),
                 0.0,
@@ -4105,6 +4203,7 @@ mod tests {
     use num_traits::ToPrimitive as _;
     use waterui_graphics::{
         OffscreenImage, OffscreenSize,
+        backend::GpuContentLeaf,
         gpu::{GpuContentRenderer, GpuRuntime, RedrawHandle},
     };
     use waterui_map::{Map, MapStyle as WaterMapStyle};
@@ -4239,8 +4338,8 @@ mod tests {
 
     #[test]
     fn surface_pan_updates_and_settles_the_camera_without_rebound() {
-        let controller =
-            MapGestureController::new(&Computed::constant(manhattan_region(0.030, 0.050)));
+        let camera = binding(manhattan_region(0.030, 0.050));
+        let controller = MapGestureController::new(&camera);
         let viewport = Viewport {
             width: 1_000,
             height: 500,
@@ -4252,6 +4351,7 @@ mod tests {
         let visible = controller.region.snapshot();
         assert!((visible.center.latitude.get() - 40.761).abs() < 1e-9);
         assert!((visible.center.longitude.get() + 73.9905).abs() < 1e-9);
+        assert_eq!(camera.snapshot(), visible);
         assert_eq!(
             controller.settled_region.snapshot(),
             manhattan_region(0.030, 0.050)
@@ -4264,6 +4364,7 @@ mod tests {
         );
         assert_eq!(controller.region.snapshot(), visible);
         assert_eq!(controller.settled_region.snapshot(), visible);
+        assert_eq!(camera.snapshot(), visible);
 
         surface_gesture.apply(
             &controller,
@@ -4276,8 +4377,8 @@ mod tests {
 
     #[test]
     fn surface_pinch_zooms_around_the_focal_point_and_settles() {
-        let controller =
-            MapGestureController::new(&Computed::constant(manhattan_region(0.030, 0.050)));
+        let camera = binding(manhattan_region(0.030, 0.050));
+        let controller = MapGestureController::new(&camera);
         let viewport = Viewport {
             width: 1_000,
             height: 500,
@@ -4646,6 +4747,7 @@ mod tests {
             options,
             fonts,
             binding(None),
+            config.camera().computed(),
             Computed::constant(initial),
             Computed::constant(false),
         );
@@ -4994,12 +5096,12 @@ mod tests {
         );
         let scene = fixture_scene(&binding(region), &style, prepared, (64, 64));
         let shared = scene.shared();
-        let mut view = host::view(scene);
+        let mut leaf = GpuContentLeaf::from(host::view(scene));
         let size = OffscreenSize::try_from_pixels(64, 64).expect("non-zero size");
         let mut renderer = pollster::block_on(GpuContentRenderer::new(
             &runtime,
             runtime.context(),
-            view.take_engine_content(),
+            leaf.take_engine_content(),
             size,
             RedrawHandle::new(|| {}),
         ))
@@ -5029,7 +5131,7 @@ mod tests {
         // The first frame sets the content up and tells the UI half the
         // extent; the next ones render the surface it presents.
         for _ in 0..3 {
-            view.frame();
+            leaf.frame();
             pollster::block_on(renderer.present(&target, display, FrameTime::now()))
                 .expect("the host frame must present");
         }
@@ -5210,5 +5312,66 @@ mod tests {
                 .is_some(),
             "the system FontCollection must shape the symbol label"
         );
+    }
+
+    #[test]
+    fn tapping_an_annotation_updates_and_clears_selection() {
+        let region = manhattan_region(0.030, 0.050);
+        let center = region.center;
+        let offset = Coordinate::from_degrees(
+            center.latitude.get() + 0.008,
+            center.longitude.get() + 0.012,
+        )
+        .expect("valid offset coordinate");
+        let annotations: Binding<Vec<Annotation<u64>>> = binding(vec![
+            Annotation::new(1_u64, center, "Center"),
+            Annotation::new(2_u64, offset, "Northeast"),
+        ]);
+        let selected: Binding<Option<u64>> = binding(None);
+        let config = test_map_config(
+            Map::new(&binding(region))
+                .annotations(annotations)
+                .selection(&selected),
+        );
+        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let mut scene = MapScene::new(&config, options, faceless_fonts());
+        assert!(scene.wants_input_events());
+        scene.viewport_size.set(Some((400.0, 400.0)));
+
+        let (min_zoom, max_zoom) = MapStyle::camera_zoom_range();
+        let camera = Camera::new(
+            region,
+            Viewport {
+                width: 400,
+                height: 400,
+            },
+            min_zoom,
+            max_zoom,
+        );
+        let (cx, cy) = camera.coordinate_point(center);
+        scene.input(&SurfaceInputEvent::PointerButton {
+            pressed: true,
+            button: SurfacePointerButton::Primary,
+            position: Point::new(cx, cy),
+            click_count: NonZeroU32::MIN,
+        });
+        assert_eq!(selected.snapshot(), Some(1));
+
+        let (nx, ny) = camera.coordinate_point(offset);
+        scene.input(&SurfaceInputEvent::PointerButton {
+            pressed: true,
+            button: SurfacePointerButton::Primary,
+            position: Point::new(nx + 4.0, ny - 3.0),
+            click_count: NonZeroU32::MIN,
+        });
+        assert_eq!(selected.snapshot(), Some(2));
+
+        scene.input(&SurfaceInputEvent::PointerButton {
+            pressed: true,
+            button: SurfacePointerButton::Primary,
+            position: Point::new(10.0, 10.0),
+            click_count: NonZeroU32::MIN,
+        });
+        assert_eq!(selected.snapshot(), None);
     }
 }

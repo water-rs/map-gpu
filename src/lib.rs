@@ -21,6 +21,7 @@ pub(crate) mod tile;
 mod visual_fixture;
 
 use std::{
+    cell::Cell,
     num::{NonZeroU32, NonZeroU64, NonZeroUsize},
     rc::Rc,
     time::Duration,
@@ -299,7 +300,11 @@ impl MapGpuOptions {
 ///
 /// Panics when `env` has no [`MapGpuOptions`] or no installed
 /// [`FontCollection`].
-pub fn map(env: &Environment, mut config: MapConfig) -> AnyView {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "public entrypoint signature consumed by Hydrolysis's map renderer"
+)]
+pub fn map(env: &Environment, config: MapConfig) -> AnyView {
     let options = env
         .get::<MapGpuOptions>()
         .expect("GPU Map requires MapGpuOptions in the application environment")
@@ -312,14 +317,14 @@ pub fn map(env: &Environment, mut config: MapConfig) -> AnyView {
         ))));
     }
 
-    let controller = Rc::new(MapGestureController::new(config.region()));
-    config.set_region(Computed::new(controller.region.clone()));
+    let controller = Rc::new(MapGestureController::new(config.camera()));
     let scene = render::map_surface_with_interaction(
         MapScene::with_viewport_signal(
             &config,
             options,
             fonts,
             controller.viewport.clone(),
+            Computed::new(controller.region.clone()),
             Computed::new(controller.settled_region.clone()),
             Computed::new(controller.animate_camera_changes.clone()),
         ),
@@ -383,8 +388,8 @@ fn map_semantics(env: &Environment, config: &MapConfig) -> MapSemantics {
     let label = env.get::<AccessibilityLabel>().is_none().then(|| {
         AccessibilityLabel::new(
             config
-                .region()
-                .clone()
+                .camera()
+                .computed()
                 .zip(config.annotations())
                 .map(|(region, annotations)| describe_map(region, &annotations))
                 .computed(),
@@ -429,25 +434,32 @@ const MIN_LONGITUDE_DELTA: f64 = MAX_LONGITUDE_DELTA / MAP_ZOOM_SCALE;
 const MAP_DRAG_MINIMUM_DISTANCE: f32 = 4.0;
 
 pub(crate) struct MapGestureController {
+    camera: Binding<Region>,
     region: Binding<Region>,
     viewport: Binding<Option<(f32, f32)>>,
     gesture_origin: Binding<Region>,
     settled_region: Binding<Region>,
     animate_camera_changes: Binding<bool>,
+    suppress_camera_echo: Rc<Cell<bool>>,
     _source_guard: BoxWatcherGuard,
 }
 
 impl MapGestureController {
-    fn new(source: &Computed<Region>) -> Self {
+    fn new(source: &Binding<Region>) -> Self {
         let initial = source.snapshot();
         let region = binding(initial);
         let settled_region = binding(initial);
         let animate_camera_changes = binding(false);
+        let suppress_camera_echo = Rc::new(Cell::new(false));
         let source_guard = source.watch({
             let region = region.clone();
             let settled_region = settled_region.clone();
             let animate_camera_changes = animate_camera_changes.clone();
+            let suppress_camera_echo = Rc::clone(&suppress_camera_echo);
             move |context| {
+                if suppress_camera_echo.get() {
+                    return;
+                }
                 let value = context.into_value();
                 tracing::debug!(
                     latitude = value.center.latitude.get(),
@@ -462,11 +474,13 @@ impl MapGestureController {
             }
         });
         Self {
+            camera: source.clone(),
             region,
             viewport: binding(None),
             gesture_origin: binding(initial),
             settled_region,
             animate_camera_changes,
+            suppress_camera_echo,
             _source_guard: source_guard,
         }
     }
@@ -474,6 +488,9 @@ impl MapGestureController {
     fn set_live_region(&self, region: Region) {
         self.animate_camera_changes.set(false);
         self.region.set(region);
+        self.suppress_camera_echo.set(true);
+        self.camera.set(region);
+        self.suppress_camera_echo.set(false);
     }
 
     fn settle_region(&self, region: Region) {
@@ -836,7 +853,8 @@ mod tests {
 
     #[test]
     fn drag_updates_the_internal_camera_without_replacing_the_map() {
-        let controller = MapGestureController::new(&Computed::constant(manhattan_region()));
+        let camera = binding(manhattan_region());
+        let controller = MapGestureController::new(&camera);
         controller.viewport.set(Some((1_000.0, 500.0)));
         controller.handle_drag(&DragEvent::new(
             GesturePhase::Started,
@@ -856,6 +874,7 @@ mod tests {
         let region = controller.region.snapshot();
         assert!((region.center.latitude.get() - 40.761).abs() < 1e-9);
         assert!((region.center.longitude.get() + 73.9905).abs() < 1e-9);
+        assert_eq!(camera.snapshot(), region);
         assert_eq!(controller.settled_region.snapshot(), manhattan_region());
 
         controller.handle_drag(&DragEvent::new(
@@ -869,12 +888,14 @@ mod tests {
             controller.settled_region.snapshot(),
             controller.region.snapshot()
         );
+        assert_eq!(camera.snapshot(), controller.region.snapshot());
         assert!(!controller.animate_camera_changes.snapshot());
     }
 
     #[test]
     fn focal_zoom_preserves_the_center_and_halves_the_span() {
-        let controller = MapGestureController::new(&Computed::constant(manhattan_region()));
+        let camera = binding(manhattan_region());
+        let controller = MapGestureController::new(&camera);
         controller.viewport.set(Some((1_000.0, 500.0)));
         controller.handle_magnification(&MagnificationEvent::new(
             GesturePhase::Started,
@@ -893,11 +914,14 @@ mod tests {
         assert_eq!(region.center, manhattan_region().center);
         assert!((region.latitude_delta - 0.015).abs() < 1e-12);
         assert!((region.longitude_delta - 0.025).abs() < 1e-12);
+        assert_eq!(camera.snapshot(), region);
+        assert!(!controller.animate_camera_changes.snapshot());
     }
 
     #[test]
     fn cancelled_magnification_keeps_the_last_visible_camera() {
-        let controller = MapGestureController::new(&Computed::constant(manhattan_region()));
+        let camera = binding(manhattan_region());
+        let controller = MapGestureController::new(&camera);
         controller.viewport.set(Some((1_000.0, 500.0)));
         controller.handle_magnification(&MagnificationEvent::new(
             GesturePhase::Started,
@@ -922,12 +946,13 @@ mod tests {
 
         assert_eq!(controller.region.snapshot(), visible);
         assert_eq!(controller.settled_region.snapshot(), visible);
+        assert_eq!(camera.snapshot(), visible);
     }
 
     #[test]
     fn source_camera_changes_animate_and_settle_immediately() {
         let source = binding(manhattan_region());
-        let controller = MapGestureController::new(&Computed::new(source.clone()));
+        let controller = MapGestureController::new(&source);
         let target = Region::new(manhattan_region().center, 0.015, 0.025);
 
         source.set(target);
