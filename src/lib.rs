@@ -331,22 +331,19 @@ pub fn map(env: &Environment, mut config: MapConfig) -> AnyView {
         scene,
         GestureObserver::new(
             DragGesture::new(MAP_DRAG_MINIMUM_DISTANCE),
-            move |env: Environment| {
-                drag_controller.handle_drag(
-                    env.get::<DragEvent>()
-                        .expect("DragGesture observer must receive a DragEvent"),
-                );
+            move |drag: DragEvent| {
+                drag_controller.handle_drag(&drag);
             },
         ),
     );
     semantics.apply(AnyView::new(Metadata::new(
         scene,
-        GestureObserver::new(MagnificationGesture::new(1.0), move |env: Environment| {
-            magnification_controller.handle_magnification(
-                env.get::<MagnificationEvent>()
-                    .expect("MagnificationGesture observer must receive a MagnificationEvent"),
-            );
-        }),
+        GestureObserver::new(
+            MagnificationGesture::new(1.0),
+            move |magnification: MagnificationEvent| {
+                magnification_controller.handle_magnification(&magnification);
+            },
+        ),
     )))
 }
 
@@ -705,7 +702,66 @@ impl MapLoadError {
 }
 
 #[cfg(test)]
+use waterui_map::{Map, MapAnnotations};
+
+#[cfg(test)]
+pub(crate) fn test_map_config<T: MapAnnotations>(map: Map<T>) -> MapConfig {
+    use core::any::Any;
+    use waterui_core::{
+        NativeView, View,
+        backend::Backend,
+        metadata::MetadataKey,
+        view::hook::{HookList, HookableView},
+    };
+
+    struct Capture(Option<MapConfig>);
+
+    impl Backend for Capture {
+        type Output = ();
+        type Ctx = ();
+        type Slot = AnyView;
+
+        fn native<N: NativeView + 'static>(&mut self, native: N, _env: &Environment, (): ()) {
+            self.0 = (Box::new(native) as Box<dyn Any>)
+                .downcast::<MapConfig>()
+                .ok()
+                .map(|boxed| *boxed);
+        }
+
+        fn metadata<K: MetadataKey>(
+            &mut self,
+            _metadata: Metadata<K, Self::Slot>,
+            _env: &Environment,
+            (): (),
+        ) {
+            unreachable!("Map::new dispatches Native<MapConfig> without Metadata");
+        }
+
+        fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) {
+            unreachable!("Map::new dispatches Native<MapConfig> without AnyView");
+        }
+
+        fn scoped<H: HookList, V: View>(&mut self, _hooks: H, view: V, env: &Environment, (): ()) {
+            view.dispatch(self, env, ());
+        }
+
+        fn hookable<V: HookableView>(&mut self, _view: V, _env: &Environment, (): ()) {
+            unreachable!("Map::new dispatches Native<MapConfig> without HookableView");
+        }
+    }
+
+    let mut capture = Capture(None);
+    map.dispatch(&mut capture, &Environment::new(), ());
+    capture.0.expect("Map must dispatch Native<MapConfig>")
+}
+
+#[cfg(test)]
 mod tests {
+    use core::num::NonZeroI32;
+
+    use waterui_core::id::Id;
+    use waterui_map::Annotation;
+
     use super::*;
 
     /// The surface draws into one GPU texture, so this label is the only thing
@@ -717,6 +773,8 @@ mod tests {
             0.03,
             0.05,
         );
+        let first_id = Id::from(NonZeroI32::new(1).expect("1 is non-zero"));
+        let second_id = Id::from(NonZeroI32::new(2).expect("2 is non-zero"));
 
         assert_eq!(
             describe_map(region, &[]).as_str(),
@@ -725,7 +783,7 @@ mod tests {
         assert_eq!(
             describe_map(
                 region,
-                &[waterui_map::Annotation::new(region.center, "Times Square")]
+                &[Annotation::new(first_id, region.center, "Times Square")]
             )
             .as_str(),
             "Map centered at 40.7580, -73.9855, 1 pin: Times Square"
@@ -734,8 +792,8 @@ mod tests {
             describe_map(
                 region,
                 &[
-                    waterui_map::Annotation::new(region.center, "Times Square"),
-                    waterui_map::Annotation::new(region.center, "Bryant Park"),
+                    Annotation::new(first_id, region.center, "Times Square"),
+                    Annotation::new(second_id, region.center, "Bryant Park"),
                 ]
             )
             .as_str(),
@@ -749,12 +807,14 @@ mod tests {
         let mut env = Environment::new();
         env.insert(AccessibilityLabel::new("City map"));
         env.insert(AccessibilityRole::Image);
-        let config = waterui_map::Map::new(manhattan_region())
-            .style(MapStyle::Standard)
-            .is_interactive(false)
-            .shows_compass(false)
-            .shows_scale(false)
-            .config();
+        let region = binding(manhattan_region());
+        let config = test_map_config(
+            Map::new(&region)
+                .style(MapStyle::Standard)
+                .is_interactive(false)
+                .shows_compass(false)
+                .shows_scale(false),
+        );
 
         let semantics = map_semantics(&env, &config);
 
@@ -762,7 +822,8 @@ mod tests {
         assert!(semantics.role.is_none());
     }
 
-    use waterui_interaction::gesture::{GesturePoint, PointerButton};
+    use waterui_core::layout::Point;
+    use waterui_interaction::gesture::PointerButton;
 
     fn manhattan_region() -> Region {
         Region::new(
@@ -779,16 +840,16 @@ mod tests {
         controller.viewport.set(Some((1_000.0, 500.0)));
         controller.handle_drag(&DragEvent::new(
             GesturePhase::Started,
-            GesturePoint::new(500.0, 250.0),
-            GesturePoint::new(0.0, 0.0),
-            GesturePoint::new(0.0, 0.0),
+            Point::new(500.0, 250.0),
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 0.0),
             PointerButton::Primary,
         ));
         controller.handle_drag(&DragEvent::new(
             GesturePhase::Updated,
-            GesturePoint::new(600.0, 300.0),
-            GesturePoint::new(100.0, 50.0),
-            GesturePoint::new(0.0, 0.0),
+            Point::new(600.0, 300.0),
+            Point::new(100.0, 50.0),
+            Point::new(0.0, 0.0),
             PointerButton::Primary,
         ));
 
@@ -799,9 +860,9 @@ mod tests {
 
         controller.handle_drag(&DragEvent::new(
             GesturePhase::Ended,
-            GesturePoint::new(600.0, 300.0),
-            GesturePoint::new(100.0, 50.0),
-            GesturePoint::new(0.0, 0.0),
+            Point::new(600.0, 300.0),
+            Point::new(100.0, 50.0),
+            Point::new(0.0, 0.0),
             PointerButton::Primary,
         ));
         assert_eq!(
@@ -817,13 +878,13 @@ mod tests {
         controller.viewport.set(Some((1_000.0, 500.0)));
         controller.handle_magnification(&MagnificationEvent::new(
             GesturePhase::Started,
-            GesturePoint::new(500.0, 250.0),
+            Point::new(500.0, 250.0),
             1.0,
             0.0,
         ));
         controller.handle_magnification(&MagnificationEvent::new(
             GesturePhase::Updated,
-            GesturePoint::new(500.0, 250.0),
+            Point::new(500.0, 250.0),
             2.0,
             0.0,
         ));
@@ -840,13 +901,13 @@ mod tests {
         controller.viewport.set(Some((1_000.0, 500.0)));
         controller.handle_magnification(&MagnificationEvent::new(
             GesturePhase::Started,
-            GesturePoint::new(500.0, 250.0),
+            Point::new(500.0, 250.0),
             1.0,
             0.0,
         ));
         controller.handle_magnification(&MagnificationEvent::new(
             GesturePhase::Updated,
-            GesturePoint::new(500.0, 250.0),
+            Point::new(500.0, 250.0),
             2.0,
             0.0,
         ));
@@ -854,7 +915,7 @@ mod tests {
 
         controller.handle_magnification(&MagnificationEvent::new(
             GesturePhase::Cancelled,
-            GesturePoint::new(500.0, 250.0),
+            Point::new(500.0, 250.0),
             2.0,
             0.0,
         ));

@@ -9,10 +9,10 @@
 use std::time::Duration;
 
 use waterui::ViewExt as _;
-use waterui::{Binding, Environment, View};
+use waterui::{Binding, View};
 use waterui_map::{Annotation, Coordinate, Latitude, Longitude, Map, Region};
 use waterui_map_gpu::MapGpuOptions;
-use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
+use waterui_testing::{Expectation, Role, Selector, UiBuilder, WaitOptions, WaitResult};
 use waterui_url::Url;
 
 const fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
@@ -30,17 +30,18 @@ const fn updated_region() -> Region {
     Region::new(coordinate(35.6764, 139.6500), 0.20, 0.20)
 }
 
-fn initial_annotations() -> Vec<Annotation> {
+fn initial_annotations() -> Vec<Annotation<u64>> {
     vec![Annotation::new(
+        1,
         coordinate(37.7749, -122.4194),
         "San Francisco",
     )]
 }
 
-fn updated_annotations() -> Vec<Annotation> {
+fn updated_annotations() -> Vec<Annotation<u64>> {
     vec![
-        Annotation::new(coordinate(35.6764, 139.6500), "Tokyo Station").subtitle("Transit"),
-        Annotation::new(coordinate(35.6895, 139.6917), "Shinjuku"),
+        Annotation::new(2, coordinate(35.6764, 139.6500), "Tokyo Station").subtitle("Transit"),
+        Annotation::new(3, coordinate(35.6895, 139.6917), "Shinjuku"),
     ]
 }
 
@@ -48,12 +49,8 @@ fn updated_annotations() -> Vec<Annotation> {
 /// `waterui-map-gpu` — a crate of its own that the `waterui` facade does not
 /// carry — draws it as Hydrolysis's realization, selected by its `map-gpu`
 /// feature as the CLI selects it for an application linking this crate.
-fn map_env() -> Environment {
-    let mut env = Environment::new();
-    env.insert(MapGpuOptions::new(Url::new(
-        "https://tiles.openfreemap.org/styles/positron",
-    )));
-    env
+fn map_options() -> MapGpuOptions {
+    MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"))
 }
 
 #[waterui::test(viewport = (420, 320))]
@@ -64,8 +61,8 @@ fn map_exposes_accessibility_surface_and_reactive_annotations(ui: UiBuilder) {
     let annotations_for_view = annotations.clone();
 
     let mut app = ui
-        .environment(map_env())
-        .mount(move || map_view(region_for_view.clone(), annotations_for_view.clone()));
+        .with(map_options())
+        .mount(move || map_view(&region_for_view, annotations_for_view.clone()));
 
     // The projection draws its whole world into one GPU texture, so assistive
     // technology sees a single image node whose label describes the camera and
@@ -80,17 +77,19 @@ fn map_exposes_accessibility_surface_and_reactive_annotations(ui: UiBuilder) {
     annotations.set(updated_annotations());
     assert!(
         app.wait_for(
-            &[app.expect_exists(
-                Selector::default()
-                    .label("Map centered at 35.6764, 139.6500, 2 pins: Tokyo Station, Shinjuku")
-            )],
+            &[Expectation::exists(Selector::default().label(
+                "Map centered at 35.6764, 139.6500, 2 pins: Tokyo Station, Shinjuku"
+            ))],
             WaitOptions::new(Duration::from_millis(250)),
         ) == WaitResult::Completed,
         "map-exposes-accessibility-surface-and-reactive-annotations: expected updated region and annotations to appear"
     );
 }
 
-fn map_view(region: Binding<Region>, annotations: Binding<Vec<Annotation>>) -> impl View {
+fn map_view(
+    region: &Binding<Region>,
+    annotations: Binding<Vec<Annotation<u64>>>,
+) -> impl View + use<> {
     Map::new(region)
         .annotations(annotations)
         .shows_user_location(true)

@@ -2,7 +2,7 @@
 name = "waterui-map-gpu"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.100"
 authors = ["Lexo Liu <me@lexo.cool>"]
 license = "Apache-2.0 OR MIT"
 readme = "README.md"
@@ -118,6 +118,9 @@ ignored = ["getrandom"]
 [patch.crates-io]
 # Hydrolysis's `map-gpu` realization is this crate.
 waterui-map-gpu = { path = "." }
+nami = { git = "https://github.com/water-rs/nami", branch = "main" }
+nami-core = { git = "https://github.com/water-rs/nami", branch = "main" }
+nami-derive = { git = "https://github.com/water-rs/nami", branch = "main" }
 waterui = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-assets = { git = "https://github.com/water-rs/waterui", branch = "main" }
 waterui-assets-core = { git = "https://github.com/water-rs/waterui", branch = "main" }
