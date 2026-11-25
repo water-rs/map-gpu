@@ -35,7 +35,7 @@ use waterui_core::{
 use waterui_interaction::gesture::{
     DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent, MagnificationGesture,
 };
-use waterui_map::{Coordinate, MapConfig, MapStyle, Region};
+use waterui_map::{Coordinate, MapConfig, MapStyle, Region, ResolvedAnnotation};
 use waterui_text::FontCollection;
 use waterui_url::Url;
 
@@ -391,7 +391,7 @@ fn map_semantics(env: &Environment, config: &MapConfig) -> MapSemantics {
             config
                 .camera()
                 .computed()
-                .zip(config.annotations())
+                .zip(config.resolved_annotations())
                 .map(|(region, annotations)| describe_map(region, &annotations))
                 .computed(),
         )
@@ -400,7 +400,7 @@ fn map_semantics(env: &Environment, config: &MapConfig) -> MapSemantics {
 }
 
 /// Describes what the map currently shows, for assistive technology.
-fn describe_map(region: Region, annotations: &[waterui_map::Annotation]) -> Str {
+fn describe_map(region: Region, annotations: &[ResolvedAnnotation]) -> Str {
     let center = format!(
         "Map centered at {:.4}, {:.4}",
         region.center.latitude.get(),
@@ -778,7 +778,6 @@ mod tests {
     use core::num::NonZeroI32;
 
     use waterui_core::id::Id;
-    use waterui_map::Annotation;
 
     use super::*;
 
@@ -801,7 +800,12 @@ mod tests {
         assert_eq!(
             describe_map(
                 region,
-                &[Annotation::new(first_id, region.center, "Times Square")]
+                &[ResolvedAnnotation::new(
+                    first_id,
+                    region.center,
+                    Str::from("Times Square"),
+                    None,
+                )]
             )
             .as_str(),
             "Map centered at 40.7580, -73.9855, 1 pin: Times Square"
@@ -810,8 +814,18 @@ mod tests {
             describe_map(
                 region,
                 &[
-                    Annotation::new(first_id, region.center, "Times Square"),
-                    Annotation::new(second_id, region.center, "Bryant Park"),
+                    ResolvedAnnotation::new(
+                        first_id,
+                        region.center,
+                        Str::from("Times Square"),
+                        None,
+                    ),
+                    ResolvedAnnotation::new(
+                        second_id,
+                        region.center,
+                        Str::from("Bryant Park"),
+                        None,
+                    ),
                 ]
             )
             .as_str(),
