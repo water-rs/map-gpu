@@ -4097,6 +4097,7 @@ mod chrome_tests {
 mod tests {
     use std::num::NonZeroU32;
 
+    use crate::test_map_config;
     use cherenkov::{FrameTime, Offscreen, OffscreenFormat, Surface};
     use cherenkov_cpu::{Raster, RasterConfig};
     use cherenkov_gpu::{Gpu, GpuConfig};
@@ -4106,7 +4107,7 @@ mod tests {
         OffscreenImage, OffscreenSize,
         gpu::{GpuContentRenderer, GpuRuntime, RedrawHandle},
     };
-    use waterui_map::Map;
+    use waterui_map::{Map, MapStyle as WaterMapStyle};
     use waterui_url::Url;
 
     use super::*;
@@ -4326,12 +4327,13 @@ mod tests {
             width: 1_200,
             height: 800,
         };
-        let config = Map::new(region)
-            .style(waterui_map::MapStyle::Standard)
-            .is_interactive(false)
-            .shows_compass(false)
-            .shows_scale(false)
-            .config();
+        let config = test_map_config(
+            Map::new(&binding(region))
+                .style(WaterMapStyle::Standard)
+                .is_interactive(false)
+                .shows_compass(false)
+                .shows_scale(false),
+        );
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let mut map = MapScene::new(&config, options, faceless_fonts());
         {
@@ -4383,12 +4385,13 @@ mod tests {
             recorded: BTreeMap::new(),
             cache: Rc::new(RefCell::new(TileCache::new(1_000_000))),
         };
-        let config = Map::new(region)
-            .style(waterui_map::MapStyle::Standard)
-            .is_interactive(false)
-            .shows_compass(false)
-            .shows_scale(false)
-            .config();
+        let config = test_map_config(
+            Map::new(&binding(region))
+                .style(WaterMapStyle::Standard)
+                .is_interactive(false)
+                .shows_compass(false)
+                .shows_scale(false),
+        );
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let mut map = MapScene::new(&config, options, fonts);
         {
@@ -4628,12 +4631,13 @@ mod tests {
         prepared: PreparedMap,
         pixels: (u32, u32),
     ) -> MapScene {
-        let config = Map::new(region.clone())
-            .style(waterui_map::MapStyle::Standard)
-            .is_interactive(false)
-            .shows_compass(false)
-            .shows_scale(false)
-            .config();
+        let config = test_map_config(
+            Map::new(region)
+                .style(WaterMapStyle::Standard)
+                .is_interactive(false)
+                .shows_compass(false)
+                .shows_scale(false),
+        );
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let initial = region.snapshot();
         let fonts = prepared.painter.fonts.clone();
@@ -5155,10 +5159,11 @@ mod tests {
         installed.install(&mut env);
 
         let region = manhattan_region(0.030, 0.050);
-        let config = Map::new(region)
-            .style(waterui_map::MapStyle::Standard)
-            .is_interactive(false)
-            .config();
+        let config = test_map_config(
+            Map::new(&binding(region))
+                .style(WaterMapStyle::Standard)
+                .is_interactive(false),
+        );
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let first = MapScene::new(&config, options.clone(), FontCollection::from_env(&env));
         let second = MapScene::new(&config, options, FontCollection::from_env(&env));
