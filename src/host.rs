@@ -174,8 +174,8 @@ impl GpuContent for MapContent {
 
     fn render(&mut self, frame: &mut Frame<'_>) {
         let view = View {
-            pixels: (frame.width, frame.height),
-            scale: frame.scale,
+            pixels: (frame.width(), frame.height()),
+            scale: frame.scale(),
         };
         if **self.shared.view.load() != view {
             // The UI half sizes its surface from this, so it needs another
@@ -189,12 +189,12 @@ impl GpuContent for MapContent {
         if let Some(output) = output {
             assert_eq!(
                 output.texture.format(),
-                frame.format,
+                frame.format(),
                 "the map surface and the content texture must share the working format"
             );
         }
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("map present"),
             });
@@ -202,7 +202,7 @@ impl GpuContent for MapContent {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("map present"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
+                    view: frame.view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -217,20 +217,22 @@ impl GpuContent for MapContent {
                 let source = output
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
-                let bind_group = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("map present"),
-                    layout: &blit.layout,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source),
-                    }],
-                });
+                let bind_group = frame
+                    .device()
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("map present"),
+                        layout: &blit.layout,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&source),
+                        }],
+                    });
                 pass.set_pipeline(&blit.pipeline);
                 pass.set_bind_group(0, &bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
         }
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
         if self.shared.animating.load(Ordering::Relaxed) {
             frame.request_redraw();
         }
