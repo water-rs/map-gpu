@@ -11,7 +11,7 @@ use std::time::Duration;
 use waterui::ViewExt as _;
 use waterui::{Binding, View};
 use waterui_map::{Annotation, Coordinate, Latitude, Longitude, Map, Region};
-use waterui_map_gpu::MapGpuOptions;
+use waterui_map_gpu::MapGpu;
 use waterui_testing::{Expectation, Role, Selector, UiBuilder, WaitOptions, WaitResult};
 use waterui_url::Url;
 
@@ -45,12 +45,12 @@ fn updated_annotations() -> Vec<Annotation<u64>> {
     ]
 }
 
-/// The options the GPU map reads: `waterui-map` is the semantic component and
+/// The plugin the GPU map reads: `waterui-map` is the semantic component and
 /// `waterui-map-gpu` — a crate of its own that the `waterui` facade does not
 /// carry — draws it as Hydrolysis's realization, selected by its `map-gpu`
 /// feature as the CLI selects it for an application linking this crate.
-fn map_options() -> MapGpuOptions {
-    MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"))
+fn map_plugin() -> MapGpu {
+    MapGpu::new(Url::new("https://tiles.openfreemap.org/styles/positron"))
 }
 
 #[waterui::test(viewport = (420, 320))]
@@ -61,7 +61,7 @@ fn map_exposes_accessibility_surface_and_reactive_annotations(ui: UiBuilder) {
     let annotations_for_view = annotations.clone();
 
     let mut app = ui
-        .with(map_options())
+        .install(map_plugin())
         .mount(move || map_view(&region_for_view, annotations_for_view.clone()));
 
     // The projection draws its whole world into one GPU texture, so assistive
@@ -96,4 +96,12 @@ fn map_view(
         .shows_compass(true)
         .shows_scale(true)
         .size(320.0, 280.0)
+}
+
+#[waterui::test(viewport = (420, 320))]
+#[cfg_attr(debug_assertions, should_panic(expected = "MapGpu"))]
+fn missing_map_gpu_plugin_reports_contract_violation(ui: UiBuilder) {
+    let region = Binding::container(initial_region());
+    let annotations = Binding::container(initial_annotations());
+    let _app = ui.mount(move || map_view(&region, annotations.clone()));
 }

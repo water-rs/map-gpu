@@ -7,7 +7,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use url::Url;
 
-use crate::{MapGpuOptions, MapLoadError, network, unblock};
+use crate::{MapGpu, MapLoadError, network, unblock};
 
 #[derive(Debug, Deserialize)]
 struct RawStyle {
@@ -183,7 +183,7 @@ impl MapStyle {
         reason = "map style loading runs on WaterUI's main-thread local executor"
     )]
     pub async fn load(
-        options: &MapGpuOptions,
+        options: &MapGpu,
         style: waterui_map::MapStyle,
     ) -> Result<Self, MapLoadError> {
         let configured = options.style_url(style)?;
@@ -283,7 +283,7 @@ impl MapStyle {
 async fn resolve_source(
     style_url: &Url,
     source: RawSource,
-    options: &MapGpuOptions,
+    options: &MapGpu,
 ) -> Result<TileSource, MapLoadError> {
     let kind = source_kind(&source.kind).ok_or_else(|| {
         MapLoadError::Unsupported(format!("source type {} is not a tile source", source.kind))
