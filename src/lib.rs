@@ -329,8 +329,7 @@ pub fn map(env: &Environment, mut config: MapConfig) -> AnyView {
     let magnification_controller = controller;
     let scene = Metadata::new(
         scene,
-        GestureObserver::new(
-            DragGesture::new(MAP_DRAG_MINIMUM_DISTANCE),
+        GestureObserver::builder(DragGesture::new(MAP_DRAG_MINIMUM_DISTANCE)).action(
             move |env: Environment| {
                 drag_controller.handle_drag(
                     env.get::<DragEvent>()
@@ -341,7 +340,7 @@ pub fn map(env: &Environment, mut config: MapConfig) -> AnyView {
     );
     semantics.apply(AnyView::new(Metadata::new(
         scene,
-        GestureObserver::new(MagnificationGesture::new(1.0), move |env: Environment| {
+        GestureObserver::builder(MagnificationGesture::new(1.0)).action(move |env: Environment| {
             magnification_controller.handle_magnification(
                 env.get::<MagnificationEvent>()
                     .expect("MagnificationGesture observer must receive a MagnificationEvent"),
