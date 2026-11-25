@@ -38,7 +38,7 @@ use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVis
 use waterui_text::FontCollection;
 
 use crate::{
-    MapGestureController, MapGpuOptions, MapLoadError,
+    MapGestureController, MapGpu, MapLoadError,
     host::{self, Shared},
     network,
     projection::{Camera, TILE_OVERSCAN_PIXELS, TILE_SIZE, TileId, Viewport},
@@ -741,7 +741,7 @@ impl PreparedMap {
         reason = "prepared maps load on WaterUI's main-thread local executor and retain main-thread caches"
     )]
     pub(crate) async fn load(
-        options: &MapGpuOptions,
+        options: &MapGpu,
         region: Region,
         width: u32,
         height: u32,
@@ -765,7 +765,7 @@ impl PreparedMap {
         reason = "prepared maps load on WaterUI's main-thread local executor and retain main-thread caches"
     )]
     async fn load_with_style(
-        options: &MapGpuOptions,
+        options: &MapGpu,
         style: MapStyle,
         region: Region,
         viewport: Viewport,
@@ -1005,7 +1005,7 @@ fn camera_transform(source: Camera, target: Camera) -> Option<Affine> {
     reason = "tile loading runs on WaterUI's main-thread local executor and uses an Rc tile cache"
 )]
 async fn load_source_tiles(
-    options: &MapGpuOptions,
+    options: &MapGpu,
     source_name: &str,
     source: &TileSource,
     ids: &[TileId],
@@ -1054,7 +1054,7 @@ async fn load_source_tiles(
     reason = "tile loading runs on WaterUI's main-thread local executor and uses an Rc tile cache"
 )]
 async fn load_tiles<T, Decode>(
-    options: &MapGpuOptions,
+    options: &MapGpu,
     source_name: &str,
     source: &TileSource,
     ids: &[TileId],
@@ -1164,7 +1164,7 @@ struct MapRequestTask {
     status: Option<Binding<MapStatus>>,
     region: Region,
     viewport: Viewport,
-    options: MapGpuOptions,
+    options: MapGpu,
     fonts: FontCollection,
     state: Rc<RefCell<MapSceneState>>,
     cache: Rc<RefCell<TileCache>>,
@@ -1411,7 +1411,7 @@ fn interpolate_region(from: Region, to: Region, progress: f64) -> Region {
 /// The live state of one GPU map: its signals, camera, tile loading and
 /// gestures. [`map_surface`] turns it into a view that draws it.
 pub struct MapScene {
-    options: MapGpuOptions,
+    options: MapGpu,
     region: Computed<Region>,
     request_region: Computed<Region>,
     animate_camera_changes: Computed<bool>,
@@ -1458,7 +1458,7 @@ impl std::fmt::Debug for MapScene {
 impl MapScene {
     /// Creates live scene content from the semantic map configuration.
     #[must_use]
-    pub fn new(config: &MapConfig, options: MapGpuOptions, fonts: FontCollection) -> Self {
+    pub fn new(config: &MapConfig, options: MapGpu, fonts: FontCollection) -> Self {
         let region = config.camera().computed();
         let request_region = region.clone();
         Self::with_viewport_signal(
@@ -1474,7 +1474,7 @@ impl MapScene {
 
     pub(crate) fn with_viewport_signal(
         config: &MapConfig,
-        options: MapGpuOptions,
+        options: MapGpu,
         fonts: FontCollection,
         viewport_size: Binding<Option<(f32, f32)>>,
         region: Computed<Region>,
@@ -4435,7 +4435,7 @@ mod tests {
                 .shows_compass(false)
                 .shows_scale(false),
         );
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let options = MapGpu::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let mut map = MapScene::new(&config, options, faceless_fonts());
         {
             let mut state = map.state.borrow_mut();
@@ -4493,7 +4493,7 @@ mod tests {
                 .shows_compass(false)
                 .shows_scale(false),
         );
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let options = MapGpu::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let mut map = MapScene::new(&config, options, fonts);
         {
             let mut state = map.state.borrow_mut();
@@ -4739,7 +4739,7 @@ mod tests {
                 .shows_compass(false)
                 .shows_scale(false),
         );
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let options = MapGpu::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let initial = region.snapshot();
         let fonts = prepared.painter.fonts.clone();
         let scene = MapScene::with_viewport_signal(
@@ -5223,7 +5223,7 @@ mod tests {
         let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
         let (width, height) = (1_600, 1_200);
         let region = manhattan_region(0.030, 0.050);
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let options = MapGpu::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let output_dir = std::path::Path::new("/tmp/waterui_map_gpu");
         std::fs::create_dir_all(output_dir).expect("cached map output directory must be created");
 
@@ -5266,7 +5266,7 @@ mod tests {
                 .style(WaterMapStyle::Standard)
                 .is_interactive(false),
         );
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let options = MapGpu::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let first = MapScene::new(&config, options.clone(), FontCollection::from_env(&env));
         let second = MapScene::new(&config, options, FontCollection::from_env(&env));
 
@@ -5333,7 +5333,7 @@ mod tests {
                 .annotations(annotations)
                 .selection(&selected),
         );
-        let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
+        let options = MapGpu::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let mut scene = MapScene::new(&config, options, faceless_fonts());
         assert!(scene.wants_input_events());
         scene.viewport_size.set(Some((400.0, 400.0)));

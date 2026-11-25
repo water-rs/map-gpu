@@ -2,8 +2,8 @@
 //!
 //! The semantic [`waterui_map::Map`] API stays platform-neutral. A self-drawn
 //! backend that bridges no platform map draws `Map` with [`map`] when the
-//! application links this crate, and the application provides a `MapLibre`
-//! style through [`MapGpuOptions`].
+//! application links this crate, and the application installs the [`MapGpu`]
+//! plugin (for example via `env.install(MapGpu::new(...))` or `.install(MapGpu::new(...))`).
 //!
 //! This realization fetches its style and vector tiles over the network, so an
 //! application using it must declare network access. On Android in particular,
@@ -29,7 +29,9 @@ use std::{
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
 use waterui_accessibility::{AccessibilityLabel, AccessibilityRole};
-use waterui_core::{AnyView, Environment, Metadata, Str, animation::Animation};
+use waterui_core::{
+    AnyView, Environment, Metadata, Str, animation::Animation, contract_violation, plugin::Plugin,
+};
 use waterui_interaction::gesture::{
     DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent, MagnificationGesture,
 };
@@ -131,9 +133,9 @@ impl Default for MapNetworkRetryPolicy {
     }
 }
 
-/// Resource and provider configuration for the GPU map realization.
+/// Plugin and provider configuration for the GPU map realization.
 #[derive(Debug, Clone)]
-pub struct MapGpuOptions {
+pub struct MapGpu {
     style_url: Url,
     satellite_style_url: Option<Url>,
     hybrid_style_url: Option<Url>,
@@ -147,7 +149,9 @@ pub struct MapGpuOptions {
     camera_animation: Animation,
 }
 
-impl MapGpuOptions {
+impl Plugin for MapGpu {}
+
+impl MapGpu {
     /// Creates options for the `MapLibre` style used by [`MapStyle::Standard`].
     ///
     /// Supply [`Self::satellite_style_url`] and [`Self::hybrid_style_url`] as
@@ -264,12 +268,12 @@ impl MapGpuOptions {
             MapStyle::Standard => Ok(&self.style_url),
             MapStyle::Satellite => self.satellite_style_url.as_ref().ok_or_else(|| {
                 MapLoadError::Unsupported(String::from(
-                    "MapStyle::Satellite needs MapGpuOptions::satellite_style_url",
+                    "MapStyle::Satellite needs MapGpu::satellite_style_url",
                 ))
             }),
             MapStyle::Hybrid => self.hybrid_style_url.as_ref().ok_or_else(|| {
                 MapLoadError::Unsupported(String::from(
-                    "MapStyle::Hybrid needs MapGpuOptions::hybrid_style_url",
+                    "MapStyle::Hybrid needs MapGpu::hybrid_style_url",
                 ))
             }),
         }
@@ -291,24 +295,21 @@ impl MapGpuOptions {
 /// The GPU map drawing `config`: how a backend with no platform map to
 /// bridge realizes a `Map`.
 ///
-/// The environment must contain [`MapGpuOptions`] and the host's
+/// The environment must contain the [`MapGpu`] plugin and the host's
 /// [`FontCollection`]. Keeping provider configuration in the application
 /// prevents `WaterUI` from hard-coding a tile service, and sharing the host's
 /// font collection avoids enumerating fonts per map instance.
-///
-/// # Panics
-///
-/// Panics when `env` has no [`MapGpuOptions`] or no installed
-/// [`FontCollection`].
 #[expect(
     clippy::needless_pass_by_value,
     reason = "public entrypoint signature consumed by Hydrolysis's map renderer"
 )]
 pub fn map(env: &Environment, config: MapConfig) -> AnyView {
-    let options = env
-        .get::<MapGpuOptions>()
-        .expect("GPU Map requires MapGpuOptions in the application environment")
-        .clone();
+    let Some(options) = env.get::<MapGpu>().cloned() else {
+        contract_violation!(
+            "GPU Map requires the `MapGpu` plugin (`env.install(MapGpu::new(...))` or `.install(MapGpu::new(...))`)"
+        );
+        return AnyView::new(());
+    };
     let fonts = FontCollection::from_env(env);
     let semantics = map_semantics(env, &config);
     if !config.interactivity().is_interactive() {
