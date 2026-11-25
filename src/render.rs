@@ -34,7 +34,9 @@ use waterui_graphics::{
     gpu::{GpuContent, GpuView},
     input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceInputEvent, SurfacePointerButton},
 };
-use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
+use waterui_map::{
+    Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region, ResolvedAnnotation,
+};
 use waterui_text::FontCollection;
 
 use crate::{
@@ -1314,7 +1316,7 @@ struct ResolvedMapFrame {
     camera: Option<Camera>,
     /// The generation a resolved frame was prepared at.
     prepared_generation: Option<u64>,
-    annotations: Vec<Annotation>,
+    annotations: Vec<ResolvedAnnotation>,
     selected_annotation: Option<Id>,
     location: Option<Location>,
     animating: bool,
@@ -1415,7 +1417,7 @@ pub struct MapScene {
     region: Computed<Region>,
     request_region: Computed<Region>,
     animate_camera_changes: Computed<bool>,
-    annotations: Computed<Vec<Annotation>>,
+    annotations: Computed<Vec<ResolvedAnnotation>>,
     selection: Option<Binding<Option<Id>>>,
     location: Computed<Option<Location>>,
     map_style: waterui_map::MapStyle,
@@ -1495,7 +1497,10 @@ impl MapScene {
             watchers.push(signal.wake_guard(Arc::clone(&shared), None));
         }
         // What the overlays show: a change records them again.
-        for signal in [config.annotations() as &dyn ErasedWakeSignal, &location] {
+        for signal in [
+            config.resolved_annotations() as &dyn ErasedWakeSignal,
+            &location,
+        ] {
             watchers.push(signal.wake_guard(Arc::clone(&shared), Some(Rc::clone(&overlay_epoch))));
         }
         if let Some(selection) = &selection {
@@ -1512,7 +1517,7 @@ impl MapScene {
             region,
             request_region,
             animate_camera_changes,
-            annotations: config.annotations().clone(),
+            annotations: config.resolved_annotations().clone(),
             selection,
             location,
             map_style: config.style(),
@@ -1798,7 +1803,7 @@ impl MapScene {
                 let dx = position.x - x;
                 let dy = position.y - y;
                 let distance_sq = dx.mul_add(dx, dy * dy);
-                (distance_sq <= max_distance_sq).then_some((distance_sq, *annotation.id()))
+                (distance_sq <= max_distance_sq).then_some((distance_sq, annotation.id()))
             })
             .min_by(|(a, _), (b, _)| a.total_cmp(b))
             .map(|(_, id)| id);
@@ -2585,7 +2590,7 @@ impl MapPainter {
         &mut self,
         scene: &mut impl ReplayDraw,
         camera: Camera,
-        annotations: &[Annotation],
+        annotations: &[ResolvedAnnotation],
         selected_annotation: Option<Id>,
         location: Option<&Location>,
         chrome: MapChrome,
@@ -2973,14 +2978,14 @@ impl MapPainter {
         &mut self,
         scene: &mut impl ReplayDraw,
         camera: Camera,
-        annotations: &[Annotation],
+        annotations: &[ResolvedAnnotation],
         selected_annotation: Option<Id>,
         registrations: &mut Registrations,
         resources: &dyn Resources,
     ) {
         for annotation in annotations {
             let (x, y) = camera.coordinate_point(annotation.coordinate());
-            let selected = selected_annotation == Some(*annotation.id());
+            let selected = selected_annotation == Some(annotation.id());
             if selected {
                 let halo = ShapeData::of(&Circle::new((x, y), 10.0).to_path(0.1));
                 scene.fill(
@@ -4206,7 +4211,7 @@ mod tests {
         backend::GpuContentLeaf,
         gpu::{GpuContentRenderer, GpuRuntime, RedrawHandle},
     };
-    use waterui_map::{Map, MapStyle as WaterMapStyle};
+    use waterui_map::{Annotation, Map, MapStyle as WaterMapStyle};
     use waterui_url::Url;
 
     use super::*;
