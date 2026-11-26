@@ -295,6 +295,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-native-tls"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9343dc5acf07e79ff82d0c37899f079db3534d99f189a1837c8e549c99405bec"
+dependencies = [
+ "futures-util",
+ "native-tls",
+ "thiserror 1.0.69",
+ "url",
+]
+
+[[package]]
 name = "async-net"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -372,6 +384,12 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
@@ -401,6 +419,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
 dependencies = [
  "bit-vec 0.8.0",
+]
+
+[[package]]
+name = "bit-set"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34ddef2995421ab6a5c779542c81ee77c115206f4ad9d5a8e05f4ff49716a3dd"
+dependencies = [
+ "bit-vec 0.9.1",
 ]
 
 [[package]]
@@ -617,10 +644,10 @@ dependencies = [
  "crossbeam-channel",
  "filtrate-core",
  "futures-lite",
- "gloo-timers",
+ "gloo-timers 0.4.1",
  "kurbo",
  "libm",
- "parley",
+ "parley 0.12.0",
  "rustc-hash 2.1.3",
  "smallvec",
  "thiserror 2.0.21",
@@ -670,12 +697,12 @@ dependencies = [
  "filtrate-core",
  "futures-channel",
  "futures-util",
- "gloo-timers",
+ "gloo-timers 0.4.1",
  "half",
  "js-sys",
  "kurbo",
  "libc",
- "naga",
+ "naga 30.0.2",
  "ndk",
  "ndk-sys",
  "objc2 0.6.5",
@@ -705,7 +732,7 @@ dependencies = [
  "waterui-contract",
  "waterui-frame-rate",
  "web-sys",
- "wgpu",
+ "wgpu 30.0.2",
 ]
 
 [[package]]
@@ -717,7 +744,7 @@ dependencies = [
  "color",
  "filtrate-core",
  "kurbo",
- "nami-core",
+ "nami-core 0.5.0",
  "rustc-hash 2.1.3",
  "serde",
  "thiserror 2.0.21",
@@ -733,7 +760,7 @@ version = "0.0.0"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
  "half",
- "naga",
+ "naga 30.0.2",
  "thiserror 2.0.21",
 ]
 
@@ -811,8 +838,8 @@ dependencies = [
  "waterui-contract",
  "waterui-easing",
  "waterui-frame-rate",
- "wgpu",
- "wgpu-hal",
+ "wgpu 30.0.2",
+ "wgpu-hal 30.0.2",
 ]
 
 [[package]]
@@ -1072,6 +1099,15 @@ dependencies = [
 
 [[package]]
 name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs"
 version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
@@ -1131,6 +1167,18 @@ checksum = "60768c353d76ba6dd1b6332a5dbbdd3bc2dddadc2935f4cc6a9d0f17ca8ecb6a"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "dns-lookup"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e39034cee21a2f5bbb66ba0e3689819c4bb5d00382a282006e802a7ffa6c41d"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "socket2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1354,7 +1402,7 @@ dependencies = [
  "tracing",
  "waterui-contract",
  "web-time",
- "wgpu",
+ "wgpu 30.0.2",
 ]
 
 [[package]]
@@ -1442,11 +1490,42 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b38ad915f6dadd993ced50848a8291a543bd41ca62bc10740d5e64e2ab4cfd7"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
+name = "font-types"
 version = "0.12.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "fontique"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6688bc1294fe7117d788937b6c53480169b29c566954af490830d4c09da9516a"
+dependencies = [
+ "hashbrown 0.17.2",
+ "linebender_resource_handle",
+ "memmap2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "parlance",
+ "read-fonts 0.41.0",
+ "roxmltree",
+ "smallvec",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "yeslogic-fontconfig-sys",
 ]
 
 [[package]]
@@ -1535,6 +1614,17 @@ dependencies = [
  "futures-core",
  "futures-task",
  "futures-util",
+]
+
+[[package]]
+name = "futures-intrusive"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d930c203dd0b6ff06e0201a4a2fe9149b43c684fd4420555b26d21b1a02956f"
+dependencies = [
+ "futures-core",
+ "lock_api",
+ "parking_lot",
 ]
 
 [[package]]
@@ -1695,10 +1785,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "gl_generator"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d"
+dependencies = [
+ "khronos_api",
+ "log",
+ "xml-rs",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "gloo-timers"
@@ -1713,6 +1826,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "glow"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29038e1c483364cc6bb3cf78feee1816002e127c331a1eec55a4d202b9e1adb5"
+dependencies = [
+ "js-sys",
+ "slotmap",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "glutin_wgl_sys"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c4ee00b289aba7a9e5306d57c2d05499b2e5dc427f84ac708bd2c090212cf3e"
+dependencies = [
+ "gl_generator",
+]
+
+[[package]]
 name = "gpu-allocator"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1724,6 +1858,36 @@ dependencies = [
  "presser",
  "thiserror 2.0.21",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "gpu-descriptor"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b89c83349105e3732062a895becfc71a8f921bb71ecbbdd8ff99263e3b53a0ca"
+dependencies = [
+ "bitflags",
+ "gpu-descriptor-types",
+ "hashbrown 0.15.5",
+]
+
+[[package]]
+name = "gpu-descriptor-types"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
+name = "guillotiere"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b17e70c989c36bad147b27a58d148c0741c51448aa5653436547323e524d0ab"
+dependencies = [
+ "euclid",
+ "svg_fmt",
 ]
 
 [[package]]
@@ -1825,6 +1989,12 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hexf-parse"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hickory-net"
@@ -1929,6 +2099,27 @@ dependencies = [
 
 [[package]]
 name = "http-kit"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bff6ef8e035130f9587ce10f3a3b6ca47e2fd7f30c035defc49d8250a6674f1b"
+dependencies = [
+ "bytes",
+ "bytestr",
+ "cookie",
+ "eyre",
+ "futures-lite",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+]
+
+[[package]]
+name = "http-kit"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "960febb0754b5f7fb0fd404ddf39be6aca98e64bbc874e1051bcbe2ff3c01907"
@@ -2001,11 +2192,11 @@ dependencies = [
  "kurbo",
  "libc",
  "lru 0.19.2",
- "nami",
+ "nami 0.13.0",
  "native-executor",
  "ndk",
  "ndk-context",
- "parley",
+ "parley 0.12.0",
  "peniko",
  "pollster",
  "raw-window-handle",
@@ -2033,13 +2224,13 @@ dependencies = [
  "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
- "waterui-map-gpu",
+ "waterui-map-gpu 0.3.0",
  "waterui-shape",
  "waterui-structural-transition",
  "waterui-text",
  "waterui-url",
  "waterui-watcher-set",
- "wgpu",
+ "wgpu 30.0.2",
 ]
 
 [[package]]
@@ -2049,7 +2240,7 @@ source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c1
 dependencies = [
  "cherenkov-record",
  "kurbo",
- "nami",
+ "nami 0.13.0",
  "waterui",
  "waterui-controls",
  "waterui-core",
@@ -2084,7 +2275,7 @@ version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "futures-channel",
  "http",
@@ -2928,6 +3119,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "khronos-egl"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
+dependencies = [
+ "libc",
+ "libloading",
+ "pkg-config",
+]
+
+[[package]]
+name = "khronos_api"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
+
+[[package]]
 name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3274,6 +3482,32 @@ dependencies = [
 
 [[package]]
 name = "naga"
+version = "29.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2bf919621e7975acb27d881bae2fb993e0d45c8e0446e85e6272971e00dc8df"
+dependencies = [
+ "arrayvec",
+ "bit-set 0.9.1",
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "codespan-reporting",
+ "half",
+ "hashbrown 0.16.1",
+ "hexf-parse",
+ "indexmap",
+ "libm",
+ "log",
+ "num-traits",
+ "once_cell",
+ "rustc-hash 1.1.0",
+ "spirv",
+ "thiserror 2.0.21",
+ "unicode-ident",
+]
+
+[[package]]
+name = "naga"
 version = "30.0.2"
 source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
@@ -3310,6 +3544,24 @@ dependencies = [
 
 [[package]]
 name = "nami"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b66f346970519dd65bc7c1dcf49696edcf43eb9916f3bb00f2b8841c44de6d35"
+dependencies = [
+ "async-channel",
+ "async-io",
+ "executor-core",
+ "futures-core",
+ "gloo-timers 0.4.1",
+ "log",
+ "nami-core 0.3.3",
+ "nami-derive 0.3.1",
+ "num-traits",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "nami"
 version = "0.13.0"
 source = "git+https://github.com/water-rs/nami?branch=main#f131e2c7a0ed2b4fd7b99b59fded97310efee20d"
 dependencies = [
@@ -3317,13 +3569,19 @@ dependencies = [
  "async-io",
  "executor-core",
  "futures-core",
- "gloo-timers",
+ "gloo-timers 0.4.1",
  "log",
- "nami-core",
- "nami-derive",
+ "nami-core 0.5.0",
+ "nami-derive 0.5.0",
  "num-traits",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "nami-core"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a70d1da3e07e48053148d4e32d49274c9249ab710ec26e9f10570e175a647ec"
 
 [[package]]
 name = "nami-core"
@@ -3331,6 +3589,17 @@ version = "0.5.0"
 source = "git+https://github.com/water-rs/nami?branch=main#f131e2c7a0ed2b4fd7b99b59fded97310efee20d"
 dependencies = [
  "kurbo",
+]
+
+[[package]]
+name = "nami-derive"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b76f4c97f6726b9589ca160480b114b8ee6cf4bfbe839253f426c1b778fc5fe"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -4232,17 +4501,44 @@ checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
 
 [[package]]
 name = "parley"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22d2ff88bd3f7d68d1d9b09c7e6209f9a8e8c05088295140a2bcf2e9b17038c5"
+dependencies = [
+ "fontique 0.11.1",
+ "harfrust",
+ "hashbrown 0.17.2",
+ "icu_normalizer",
+ "icu_properties",
+ "icu_segmenter",
+ "linebender_resource_handle",
+ "parlance",
+ "parley_data 0.11.1",
+ "skrifa 0.44.0",
+]
+
+[[package]]
+name = "parley"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61bd0c0c1737f0b3d3726dc06b225083af213b61913e4fbae1670613a106c6ce"
 dependencies = [
  "core_maths",
- "fontique",
+ "fontique 0.12.0",
  "hashbrown 0.17.2",
  "linebender_resource_handle",
  "parlance",
  "parley_engine",
  "smallvec",
+]
+
+[[package]]
+name = "parley_data"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1567535334d6ba2d3cde19221ba9a7bd0fabb3cbd99046ddfb10ae061cfcc889"
+dependencies = [
+ "icu_properties",
 ]
 
 [[package]]
@@ -4267,7 +4563,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b74c0d373e462e504ad4436710a39f099e18e848e1ee711f70cd2dcd5a69b290"
 dependencies = [
- "fontique",
+ "fontique 0.12.0",
  "harfrust",
  "hashbrown 0.17.2",
  "icu_locale_core",
@@ -4276,7 +4572,7 @@ dependencies = [
  "icu_segmenter",
  "linebender_resource_handle",
  "parlance",
- "parley_data",
+ "parley_data 0.12.0",
  "parley_emoji",
  "skrifa 0.44.0",
 ]
@@ -4640,13 +4936,23 @@ dependencies = [
 
 [[package]]
 name = "read-fonts"
+version = "0.39.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4ed38b89c2c77ff968c524145ad65fb010f38af5c7a224b53b81d47ac2daa81"
+dependencies = [
+ "bytemuck",
+ "font-types 0.11.3",
+]
+
+[[package]]
+name = "read-fonts"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709"
 dependencies = [
  "bytemuck",
  "core_maths",
- "font-types",
+ "font-types 0.12.7",
  "once_cell",
 ]
 
@@ -4658,7 +4964,7 @@ checksum = "4edc8db0d972de88e53a085b1f01fb3fbdae7bb0cb7a0ce2b2f8285a412fe3ef"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
- "font-types",
+ "font-types 0.12.7",
  "once_cell",
  "yoke",
 ]
@@ -5085,12 +5391,22 @@ dependencies = [
 
 [[package]]
 name = "shaderloom"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abfe38a4a8d473f595240dd001b51c5778b30ee439a0c5f4960554a977bcba93"
+dependencies = [
+ "naga 29.0.4",
+ "wgpu 29.0.4",
+]
+
+[[package]]
+name = "shaderloom"
 version = "0.2.1"
 source = "git+https://github.com/water-rs/shaderloom?branch=main#39151357f1e703d100ad26b1e96ba020d68c74bd"
 dependencies = [
  "serde",
  "toml",
- "wgpu",
+ "wgpu 30.0.2",
 ]
 
 [[package]]
@@ -5163,6 +5479,16 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "skrifa"
+version = "0.42.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c34617370ae968efb7161bb2beb517d9084659aae19e24b89e3db25b46e4564"
+dependencies = [
+ "bytemuck",
+ "read-fonts 0.39.2",
+]
+
+[[package]]
+name = "skrifa"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68"
@@ -5187,6 +5513,15 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "slotmap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
+dependencies = [
+ "version_check",
+]
 
 [[package]]
 name = "smallvec"
@@ -5279,8 +5614,14 @@ name = "suiteki"
 version = "0.1.1"
 source = "git+https://github.com/water-rs/suiteki?branch=main#5de98edc9395cbe4e7186ac1e0386c8f62e6eb26"
 dependencies = [
- "nami-core",
+ "nami-core 0.5.0",
 ]
+
+[[package]]
+name = "svg_fmt"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0193cc4331cfd2f3d2011ef287590868599a2f33c3e69bc22c1a3d3acf9e02fb"
 
 [[package]]
 name = "svgtypes"
@@ -5872,6 +6213,51 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
+name = "vello"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "261359dbef879f8110ef7e1c442246c838d33d3d91cb05e0ea9288d432760c9f"
+dependencies = [
+ "bytemuck",
+ "futures-intrusive",
+ "log",
+ "peniko",
+ "png",
+ "skrifa 0.42.1",
+ "static_assertions",
+ "thiserror 2.0.21",
+ "vello_encoding",
+ "vello_shaders",
+ "wgpu 29.0.4",
+]
+
+[[package]]
+name = "vello_encoding"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2346f5f0d7dccb3582fcd397b4a57b43165209f1424e0d76e85dd814db164af7"
+dependencies = [
+ "bytemuck",
+ "guillotiere",
+ "peniko",
+ "skrifa 0.42.1",
+ "smallvec",
+]
+
+[[package]]
+name = "vello_shaders"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9dd38937516fa4b47423d9255bb5e4a65e839ec9d57c38c4af6189ce56bf46b7"
+dependencies = [
+ "bytemuck",
+ "log",
+ "naga 29.0.4",
+ "thiserror 2.0.21",
+ "vello_encoding",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6022,7 +6408,7 @@ dependencies = [
  "executor-core",
  "futures",
  "jiff",
- "nami",
+ "nami 0.13.0",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "thiserror 2.0.21",
@@ -6083,7 +6469,7 @@ version = "0.3.0"
 source = "git+https://github.com/water-rs/waterkit?branch=main#0e355ccf8c60c9f94537b560e54f7e1008aff98c"
 dependencies = [
  "async-fs",
- "dirs",
+ "dirs 7.0.0",
  "indexed_db_futures",
  "jni 0.22.4",
  "objc2-foundation 0.3.2",
@@ -6172,7 +6558,7 @@ name = "waterui-accessibility"
 version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
- "nami",
+ "nami 0.13.0",
  "suiteki",
  "waterui-core",
 ]
@@ -6183,7 +6569,7 @@ version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
  "cocoa-ui",
- "nami",
+ "nami 0.13.0",
  "tracing",
  "waterui-controls",
  "waterui-core",
@@ -6247,7 +6633,7 @@ version = "0.5.2"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
  "kurbo",
- "nami",
+ "nami 0.13.0",
  "num-traits",
  "tracing",
  "tracing-subscriber",
@@ -6266,7 +6652,7 @@ name = "waterui-capture"
 version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
- "nami",
+ "nami 0.13.0",
  "thiserror 2.0.21",
  "waterui-core",
 ]
@@ -6279,7 +6665,7 @@ dependencies = [
  "cherenkov-record",
  "color",
  "filtrate-core",
- "nami",
+ "nami 0.13.0",
  "pastey",
  "waterui-core",
 ]
@@ -6298,7 +6684,7 @@ version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
  "executor-core",
- "nami",
+ "nami 0.13.0",
  "serde",
  "thiserror 2.0.21",
  "waterui-accessibility",
@@ -6316,7 +6702,7 @@ version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
  "anyhow",
- "nami",
+ "nami 0.13.0",
  "num-traits",
  "smallvec",
  "suiteki",
@@ -6348,7 +6734,7 @@ source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c1
 dependencies = [
  "getrandom 0.4.3",
  "jiff",
- "nami",
+ "nami 0.13.0",
  "tracing",
  "waterkit-dialog",
  "waterui-controls",
@@ -6369,7 +6755,7 @@ name = "waterui-frame-rate"
 version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
- "nami",
+ "nami 0.13.0",
 ]
 
 [[package]]
@@ -6389,10 +6775,10 @@ dependencies = [
  "image",
  "keyboard-types",
  "mp4parse",
- "nami",
+ "nami 0.13.0",
  "pollster",
  "send_wrapper",
- "shaderloom",
+ "shaderloom 0.2.1",
  "thiserror 2.0.21",
  "tracing",
  "waterui-color",
@@ -6400,7 +6786,7 @@ dependencies = [
  "waterui-frame-rate",
  "waterui-macros",
  "waterui-text",
- "wgpu",
+ "wgpu 30.0.2",
  "wgpu-external-frame",
 ]
 
@@ -6420,7 +6806,7 @@ source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c1
 dependencies = [
  "bitflags",
  "keyboard-types",
- "nami",
+ "nami 0.13.0",
  "waterui-core",
 ]
 
@@ -6432,7 +6818,7 @@ dependencies = [
  "async-channel",
  "cpu-time",
  "executor-core",
- "nami",
+ "nami 0.13.0",
  "native-executor",
  "pastey",
  "suiteki",
@@ -6470,7 +6856,7 @@ name = "waterui-layout"
 version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
- "nami",
+ "nami 0.13.0",
  "num-traits",
  "smallvec",
  "waterui-contract",
@@ -6494,7 +6880,7 @@ dependencies = [
  "icu_provider",
  "icu_time",
  "jiff",
- "nami",
+ "nami 0.13.0",
  "num-traits",
  "suiteki",
  "sys-locale",
@@ -6532,7 +6918,7 @@ name = "waterui-map"
 version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
- "nami",
+ "nami 0.13.0",
  "suiteki",
  "waterkit-location",
  "waterui-core",
@@ -6542,6 +6928,46 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c657878495954c53993ae1ad1ecd7f2adfef9c807ae140e568052a49eb3dd74"
+dependencies = [
+ "blocking",
+ "bytemuck",
+ "executor-core",
+ "futures",
+ "futures-lite",
+ "geo",
+ "geo-types",
+ "getrandom 0.2.17",
+ "image",
+ "kurbo",
+ "lru 0.16.4",
+ "maplibre-expr",
+ "mvt-reader",
+ "nami 0.11.2",
+ "native-executor",
+ "parley 0.11.1",
+ "peniko",
+ "rayon",
+ "serde",
+ "serde_json",
+ "shaderloom 0.1.2",
+ "thiserror 2.0.21",
+ "tracing",
+ "url",
+ "vello",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-map",
+ "waterui-url",
+ "web-time",
+ "wgpu 29.0.4",
+ "zenwave 0.6.1",
+]
+
+[[package]]
+name = "waterui-map-gpu"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -6559,10 +6985,10 @@ dependencies = [
  "lru 0.16.4",
  "maplibre-expr",
  "mvt-reader",
- "nami",
+ "nami 0.13.0",
  "native-executor",
  "num-traits",
- "parley",
+ "parley 0.12.0",
  "pollster",
  "rayon",
  "rustc-hash 2.1.3",
@@ -6581,7 +7007,7 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "web-time",
- "zenwave",
+ "zenwave 0.12.0",
 ]
 
 [[package]]
@@ -6594,7 +7020,7 @@ name = "waterui-navigation"
 version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
- "nami",
+ "nami 0.13.0",
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
@@ -6628,7 +7054,7 @@ name = "waterui-shape"
 version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
- "nami",
+ "nami 0.13.0",
  "waterui-core",
  "waterui-graphics",
 ]
@@ -6683,8 +7109,8 @@ name = "waterui-text"
 version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
- "nami",
- "parley",
+ "nami 0.13.0",
+ "parley 0.12.0",
  "smallvec",
  "suiteki",
  "syntect",
@@ -6705,8 +7131,8 @@ name = "waterui-url"
 version = "0.5.1"
 source = "git+https://github.com/water-rs/waterui?branch=main#38c118b56f3f43d0c15b78c4e12d2a17c96ae867"
 dependencies = [
- "base64",
- "nami-core",
+ "base64 0.23.1",
+ "nami-core 0.5.0",
  "suiteki",
  "waterui-contract",
 ]
@@ -6827,6 +7253,36 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "wgpu"
+version = "29.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
+dependencies = [
+ "arrayvec",
+ "bitflags",
+ "bytemuck",
+ "cfg-if",
+ "cfg_aliases",
+ "document-features",
+ "hashbrown 0.16.1",
+ "js-sys",
+ "log",
+ "naga 29.0.4",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "smallvec",
+ "static_assertions",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu-core 29.0.4",
+ "wgpu-hal 29.0.4",
+ "wgpu-types 29.0.4",
+]
+
+[[package]]
+name = "wgpu"
 version = "30.0.2"
 source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
@@ -6839,7 +7295,7 @@ dependencies = [
  "hashbrown 0.17.2",
  "js-sys",
  "log",
- "naga",
+ "naga 30.0.2",
  "parking_lot",
  "portable-atomic",
  "profiling",
@@ -6849,9 +7305,42 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "wgpu-core",
- "wgpu-hal",
- "wgpu-types",
+ "wgpu-core 30.0.2",
+ "wgpu-hal 30.0.2",
+ "wgpu-types 30.0.2",
+]
+
+[[package]]
+name = "wgpu-core"
+version = "29.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f519832254e56965a9940c4af57dcb75f702b6f6fa4a0b172f685395843a4d7"
+dependencies = [
+ "arrayvec",
+ "bit-set 0.9.1",
+ "bit-vec 0.9.1",
+ "bitflags",
+ "bytemuck",
+ "cfg_aliases",
+ "document-features",
+ "hashbrown 0.16.1",
+ "indexmap",
+ "log",
+ "naga 29.0.4",
+ "once_cell",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "rustc-hash 1.1.0",
+ "smallvec",
+ "thiserror 2.0.21",
+ "wgpu-core-deps-apple 29.0.4",
+ "wgpu-core-deps-emscripten",
+ "wgpu-core-deps-windows-linux-android 29.0.4",
+ "wgpu-hal 29.0.4",
+ "wgpu-naga-bridge 29.0.4",
+ "wgpu-types 29.0.4",
 ]
 
 [[package]]
@@ -6869,7 +7358,7 @@ dependencies = [
  "hashbrown 0.17.2",
  "indexmap",
  "log",
- "naga",
+ "naga 30.0.2",
  "naga-types",
  "once_cell",
  "parking_lot",
@@ -6879,11 +7368,20 @@ dependencies = [
  "rustc-hash 1.1.0",
  "smallvec",
  "thiserror 2.0.21",
- "wgpu-core-deps-apple",
- "wgpu-core-deps-windows-linux-android",
- "wgpu-hal",
- "wgpu-naga-bridge",
- "wgpu-types",
+ "wgpu-core-deps-apple 30.0.2",
+ "wgpu-core-deps-windows-linux-android 30.0.2",
+ "wgpu-hal 30.0.2",
+ "wgpu-naga-bridge 30.0.2",
+ "wgpu-types 30.0.2",
+]
+
+[[package]]
+name = "wgpu-core-deps-apple"
+version = "29.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5e39e26c4c0e07589e67d18546cf79ff45383659fc72fca4dd293358a0347f3"
+dependencies = [
+ "wgpu-hal 29.0.4",
 ]
 
 [[package]]
@@ -6891,7 +7389,25 @@ name = "wgpu-core-deps-apple"
 version = "30.0.2"
 source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
- "wgpu-hal",
+ "wgpu-hal 30.0.2",
+]
+
+[[package]]
+name = "wgpu-core-deps-emscripten"
+version = "29.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01e09be551dc939498bdd5f6b2c66e55ab275dad25825267a08605a80fc9f0af"
+dependencies = [
+ "wgpu-hal 29.0.4",
+]
+
+[[package]]
+name = "wgpu-core-deps-windows-linux-android"
+version = "29.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e592c1bbef6ad047647ae6e666ebd8cee7a32bb4544d9700ec96cbf73230257"
+dependencies = [
+ "wgpu-hal 29.0.4",
 ]
 
 [[package]]
@@ -6899,7 +7415,7 @@ name = "wgpu-core-deps-windows-linux-android"
 version = "30.0.2"
 source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
- "wgpu-hal",
+ "wgpu-hal 30.0.2",
 ]
 
 [[package]]
@@ -6916,8 +7432,62 @@ dependencies = [
  "objc2-metal 0.3.2",
  "sync_wrapper",
  "thiserror 2.0.21",
- "wgpu",
+ "wgpu 30.0.2",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "wgpu-hal"
+version = "29.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97ace1c17727311c22a46e4e3faf56ea6de81af99dcc839bdfb54857b94d448d"
+dependencies = [
+ "android_system_properties",
+ "arrayvec",
+ "ash",
+ "bit-set 0.9.1",
+ "bitflags",
+ "block2 0.6.2",
+ "bytemuck",
+ "cfg-if",
+ "cfg_aliases",
+ "glow",
+ "glutin_wgl_sys",
+ "gpu-allocator",
+ "gpu-descriptor",
+ "hashbrown 0.16.1",
+ "js-sys",
+ "khronos-egl",
+ "libc",
+ "libloading",
+ "log",
+ "naga 29.0.4",
+ "ndk-sys",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "once_cell",
+ "ordered-float",
+ "parking_lot",
+ "portable-atomic",
+ "portable-atomic-util",
+ "profiling",
+ "range-alloc",
+ "raw-window-handle",
+ "raw-window-metal",
+ "renderdoc-sys",
+ "smallvec",
+ "thiserror 2.0.21",
+ "wasm-bindgen",
+ "wayland-sys",
+ "web-sys",
+ "wgpu-naga-bridge 29.0.4",
+ "wgpu-types 29.0.4",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-result 0.4.1",
 ]
 
 [[package]]
@@ -6939,7 +7509,7 @@ dependencies = [
  "libc",
  "libloading",
  "log",
- "naga",
+ "naga 30.0.2",
  "naga-types",
  "objc2 0.6.5",
  "objc2-core-foundation",
@@ -6960,10 +7530,20 @@ dependencies = [
  "smallvec",
  "static_assertions",
  "thiserror 2.0.21",
- "wgpu-naga-bridge",
- "wgpu-types",
+ "wgpu-naga-bridge 30.0.2",
+ "wgpu-types 30.0.2",
  "windows 0.62.2",
  "windows-core 0.62.2",
+]
+
+[[package]]
+name = "wgpu-naga-bridge"
+version = "29.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95226013f547544b223281cd16a4fb549aa9dcb562adbda0faae4c73ffbbc161"
+dependencies = [
+ "naga 29.0.4",
+ "wgpu-types 29.0.4",
 ]
 
 [[package]]
@@ -6971,8 +7551,22 @@ name = "wgpu-naga-bridge"
 version = "30.0.2"
 source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
- "naga",
- "wgpu-types",
+ "naga 30.0.2",
+ "wgpu-types 30.0.2",
+]
+
+[[package]]
+name = "wgpu-types"
+version = "29.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84bf84cd9ca8ca45e2b223a3868f1adf9bfc0c66aeac212e76ee7e40fdadf8f5"
+dependencies = [
+ "bitflags",
+ "bytemuck",
+ "js-sys",
+ "log",
+ "raw-window-handle",
+ "web-sys",
 ]
 
 [[package]]
@@ -7213,6 +7807,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
 dependencies = [
  "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.60.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
+dependencies = [
+ "windows-targets 0.53.5",
 ]
 
 [[package]]
@@ -7509,6 +8112,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "acf4d1bc32aa46eec18caa634ec3cf4c05bfa151f12b93b510b15190f69a1ca8"
 
 [[package]]
+name = "xml-rs"
+version = "0.8.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+
+[[package]]
 name = "yeslogic-fontconfig-sys"
 version = "6.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7607,6 +8216,53 @@ dependencies = [
 
 [[package]]
 name = "zenwave"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcebfb9dc75f253b47fa02ca3116d90c9fde75487e21586133a5d017c645081e"
+dependencies = [
+ "anyhow",
+ "async-fs",
+ "async-io",
+ "async-lock",
+ "async-native-tls",
+ "async-net",
+ "base64 0.22.1",
+ "cfg_aliases",
+ "dirs 6.0.0",
+ "dns-lookup 3.0.1",
+ "executor-core",
+ "futures-channel",
+ "futures-io",
+ "futures-rustls",
+ "futures-util",
+ "gloo-timers 0.3.0",
+ "http",
+ "http-body-util",
+ "http-kit 0.4.4",
+ "httpdate",
+ "hyper",
+ "hyper-util",
+ "js-sys",
+ "native-tls",
+ "once_cell",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "time",
+ "tower-service",
+ "tracing",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-streams",
+ "web-sys",
+]
+
+[[package]]
+name = "zenwave"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2caf0440d2e45b764b01bd81db255e2ef36d63e4ac467cf1d8ffce36b7626e6f"
@@ -7617,22 +8273,22 @@ dependencies = [
  "async-lock",
  "async-net",
  "async-trait",
- "base64",
+ "base64 0.23.1",
  "cfg_aliases",
  "cookie_store",
- "dirs",
- "dns-lookup",
+ "dirs 7.0.0",
+ "dns-lookup 4.0.2",
  "executor-core",
  "futures-channel",
  "futures-io",
  "futures-rustls",
  "futures-util",
- "gloo-timers",
+ "gloo-timers 0.4.1",
  "hickory-proto",
  "hickory-resolver",
  "http",
  "http-body-util",
- "http-kit",
+ "http-kit 0.8.2",
  "http-kit-io",
  "httpdate",
  "hyper",
