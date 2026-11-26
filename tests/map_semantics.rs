@@ -55,8 +55,8 @@ fn map_plugin() -> MapGpu {
 
 #[waterui::test(viewport = (420, 320))]
 fn map_exposes_accessibility_surface_and_reactive_annotations(ui: UiBuilder) {
-    let region = Binding::container(initial_region());
-    let annotations = Binding::container(initial_annotations());
+    let region = Binding::new(initial_region());
+    let annotations = Binding::new(initial_annotations());
     let region_for_view = region.clone();
     let annotations_for_view = annotations.clone();
 
@@ -101,7 +101,7 @@ fn map_view(
 #[waterui::test(viewport = (420, 320))]
 #[cfg_attr(debug_assertions, should_panic(expected = "MapGpu"))]
 fn missing_map_gpu_plugin_reports_contract_violation(ui: UiBuilder) {
-    let region = Binding::container(initial_region());
-    let annotations = Binding::container(initial_annotations());
+    let region = Binding::new(initial_region());
+    let annotations = Binding::new(initial_annotations());
     let _app = ui.mount(move || map_view(&region, annotations.clone()));
 }

@@ -34,7 +34,8 @@ use cherenkov_gpu::{
     interop::{SharedDevice, TextureTarget, shader_module},
 };
 use waterui_graphics::{
-    gpu::{Context, Frame, GpuContent, GpuView, RedrawHandle, wgpu},
+    GpuContent, GpuView,
+    gpu::{Context, Frame, RedrawHandle, wgpu},
     input::SurfaceInputEvent,
 };
 
@@ -159,6 +160,8 @@ struct MapContent {
 }
 
 impl GpuContent for MapContent {
+    type Params = ();
+
     fn setup(&mut self, gpu: &Context<'_>) {
         self.blit = Some(Blit::new(gpu.device(), gpu.format()));
         self.shared
@@ -357,7 +360,7 @@ impl Host {
 }
 
 /// `scene` as a view drawn by [`GpuContent`].
-pub fn view(scene: MapScene) -> GpuView<impl GpuContent> {
+pub fn view(scene: MapScene) -> GpuView<impl GpuContent<Params = ()>> {
     let shared = scene.shared();
     let interactive = scene.wants_input_events();
     let scene = Rc::new(RefCell::new(scene));
